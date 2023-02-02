@@ -1,0 +1,11 @@
+moveit_setup_assistant_config:
+  URDF:
+    package: ocs2_robotic_assets
+    relative_path: resources/mobile_manipulator/ridgeback_ur5/urdf/ridgeback_ur5.urdf
+    xacro_args: ""
+  SRDF:
+    relative_path: config/ridgeback.srdf
+  CONFIG:
+    author_name: Hyunwoo Ryu
+    author_email: tomato1mule@gmail.com
+    generated_timestamp: 1674221112
