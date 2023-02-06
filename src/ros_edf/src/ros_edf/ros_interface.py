@@ -4,6 +4,7 @@ import threading
 from typing import Optional, Tuple, List, Union, Any
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 import rospy
 import actionlib
@@ -29,20 +30,25 @@ from edf_env.utils import CamData
 
 
 class EdfMoveitInterface():
-    def __init__(self, init_node = False, moveit_commander_argv = sys.argv):
+    def __init__(self, pose_reference_frame: str, 
+                 arm_group_name: str = "arm",
+                 gripper_group_name: str = "gripper",
+                 planner_id: str = "BiTRRT",
+                 init_node: bool = False, 
+                 moveit_commander_argv = sys.argv):
         moveit_commander.roscpp_initialize(moveit_commander_argv)
         if init_node:
             rospy.init_node('edf_moveit_interface', anonymous=True)
 
         self.robot_com = moveit_commander.RobotCommander()
         self.scene_intf = moveit_commander.PlanningSceneInterface()
-        self.arm_group_name = "arm"
+        self.arm_group_name = arm_group_name
         self.arm_group = moveit_commander.MoveGroupCommander(self.arm_group_name)
-        self.arm_group.set_planner_id("BiTRRT")
+        self.arm_group.set_planner_id(planner_id)
         self.arm_group.set_planning_time(0.5)
-        self.arm_group.set_pose_reference_frame('map')
+        self.arm_group.set_pose_reference_frame(pose_reference_frame)
 
-        self.gripper_group_name = "gripper"
+        self.gripper_group_name = gripper_group_name
         self.gripper_group = moveit_commander.MoveGroupCommander(self.gripper_group_name)
         self.gripper_group.set_planning_time(0.5)
 
@@ -89,12 +95,25 @@ class EdfMoveitInterface():
 
 
 class EdfRosInterface(EdfInterface):
-    def __init__(self):
+    def __init__(self, pose_reference_frame: str, 
+                 pointcloud_frame: str,
+                 arm_group_name: str = "arm",
+                 gripper_group_name: str = "gripper",
+                 planner_id: str = "BiTRRT"):
+
+        self.pose_reference_frame = pose_reference_frame
+        self.pointcloud_frame = pointcloud_frame
+        self.arm_group_name = arm_group_name
+        self.gripper_group_name = gripper_group_name
+        self.planner_id = planner_id    
+    
         rospy.init_node('edf_env_ros_interface', anonymous=True)
-        self.moveit_interface = EdfMoveitInterface(init_node=False, moveit_commander_argv=sys.argv)
+        self.moveit_interface = EdfMoveitInterface(pose_reference_frame=self.pose_reference_frame, arm_group_name=self.arm_group_name, gripper_group_name=self.gripper_group_name, planner_id=planner_id, init_node=False, moveit_commander_argv=sys.argv)
         # self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', UpdatePointCloud)
         self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', Empty)
         self.scene_pc_sub = rospy.Subscriber('scene_pointcloud', PointCloud2, callback=self._scene_pc_callback)
+        self.tf_Buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_Buffer)
 
         self.min_gripper_val = 0.0
         self.max_gripper_val = 0.725
@@ -105,6 +124,29 @@ class EdfRosInterface(EdfInterface):
         self.scene_pc = None
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
 
+    def get_frame(self, target_frame: str, source_frame: str):
+        trans = self.tf_Buffer.lookup_transform(target_frame=source_frame, source_frame=target_frame, time = rospy.Time()) # transform is inverse of the frame
+        pos = np.array([trans.transform.translation.x, trans.transform.translation.y, trans.transform.translation.z])
+        orn = np.array([trans.transform.rotation.x, trans.transform.rotation.y, trans.transform.rotation.z, trans.transform.rotation.w])
+
+        return pos, Rotation.from_quat(orn)
+    
+    def change_frame(self, points: np.ndarray, target_frame: str, source_frame: str, orns: Optional[np.ndarray] = None):
+        assert points.ndim == 2 and points.shape[-1] == 3
+        if orns is not None:
+            assert orns.ndim == 2 and orns.shape[-1] == 3
+        
+        if target_frame == source_frame:
+            if orns is None:
+                return points
+            else:
+                return points, orns
+
+        inv_pos, inv_orn = self.get_frame(target_frame=source_frame, source_frame=target_frame)
+        if orns is None:
+            return inv_orn.apply(points) + inv_pos
+        else:
+            return inv_orn.apply(points) + inv_pos, (inv_orn * Rotation.from_quat(orns)).as_quat()
 
     def _scene_pc_callback(self, data: PointCloud2):
         if self.update_scene_pc_flag is True:
@@ -136,25 +178,24 @@ class EdfRosInterface(EdfInterface):
             
         if success:
             rospy.loginfo(f"Processing received scene point cloud...")
-            self.scene_pc = decode_pc(pointcloud2_to_array(self.scene_pc_raw))
+            points, colors = decode_pc(pointcloud2_to_array(self.scene_pc_raw))
+            self.scene_pc = self.change_frame(points=points, target_frame=self.pose_reference_frame, source_frame=self.pointcloud_frame), colors
             rospy.loginfo(f"Scene pointcloud update success!")
             return True
         else:
             rospy.loginfo(f"Scene pointcloud update failed!")
             return False
-            
 
-
-    def observe_scene(self, obs_type: str ='pointcloud', update: bool = True) -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
+    def observe_scene(self, obs_type: str ='pointcloud', update: bool = True, frame: str = "scene") -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
         if obs_type == 'pointcloud':
             if update:
                 update_result = self.update_scene_pc(request_update=True)
                 if update_result is True:
-                    return self.scene_pc   # (points, colors)
+                    return self.scene_pc
                 else:
                     return False
             else:
-                return self.scene_pc       # (points, colors)
+                return self.scene_pc
         elif obs_type == 'image':
             raise NotImplementedError
         else:
@@ -162,8 +203,8 @@ class EdfRosInterface(EdfInterface):
 
     def observe_ee(self, obs_type: str ='pointcloud', update: bool = True):
         raise NotImplementedError
-        
-    def move_to_target_pose(self, poses: np.ndarray) -> Tuple[List[bool], np.ndarray]:
+
+    def move_to_target_pose(self, poses: np.ndarray) -> Tuple[List[bool], Optional[np.ndarray]]:
         assert poses.ndim == 2 and poses.shape[-1] == 7 # [[qw,qx,qy,qz,x,y,z], ...]
 
         results = []
@@ -173,24 +214,39 @@ class EdfRosInterface(EdfInterface):
             if result_ is True:
                 result_pose = pose.copy()
                 break
+            else:
+                result_pose = None
         return results, result_pose
 
     def grasp(self) -> bool:
         grasp_result = self.moveit_interface.control_gripper(gripper_val=self.max_gripper_val)
         return grasp_result
+    
+    def release(self) -> bool:
+        grasp_result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
+        return grasp_result
 
-    def pick(self, target_poses: np.ndarray) -> Tuple[List[bool], np.ndarray, bool, List[bool], np.ndarray]:
+
+    def pick(self, target_poses: np.ndarray) -> Tuple[List[bool], Optional[np.ndarray], bool, Optional[List[bool]], Optional[np.ndarray]]:
         assert target_poses.ndim == 2 and target_poses.shape[-1] == 7 # [[qw,qx,qy,qz,x,y,z], ...]
 
-        pre_grasp_results, grasp_pose = self.move_to_target_pose(poses = target_poses)
-        grasp_result: bool = self.grasp()
-        post_grasp_poses = grasp_pose.reshape(1,7)
+        release_result: bool = self.release()
 
-        N_candidate_post_grasp = 5
-        post_grasp_poses = np.tile(post_grasp_poses, (N_candidate_post_grasp,1))
-        post_grasp_poses[:,-1] += np.linspace(0.3, 0.1, N_candidate_post_grasp)
-        post_grasp_results, final_pose = self.move_to_target_pose(poses = post_grasp_poses)
+        pre_grasp_results, grasp_pose = self.move_to_target_pose(poses = target_poses)
         
+        if grasp_pose is None:
+            post_grasp_poses = None
+            grasp_result = False
+            post_grasp_results = None
+            final_pose = None
+        else:
+            grasp_result: bool = self.grasp()
+            post_grasp_poses = grasp_pose.reshape(1,7)
+
+            N_candidate_post_grasp = 5
+            post_grasp_poses = np.tile(post_grasp_poses, (N_candidate_post_grasp,1))
+            post_grasp_poses[:,-1] += np.linspace(0.3, 0.1, N_candidate_post_grasp)
+            post_grasp_results, final_pose = self.move_to_target_pose(poses = post_grasp_poses)
 
         return pre_grasp_results, grasp_pose, grasp_result, post_grasp_results, final_pose
 
