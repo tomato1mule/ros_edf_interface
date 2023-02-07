@@ -95,34 +95,39 @@ class EdfMoveitInterface():
 
 
 class EdfRosInterface(EdfInterface):
-    def __init__(self, pose_reference_frame: str, 
-                 pointcloud_frame: str,
+    def __init__(self, reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
                  planner_id: str = "BiTRRT"):
 
-        self.pose_reference_frame = pose_reference_frame
-        self.pointcloud_frame = pointcloud_frame
+        self.update_scene_pc_flag = False
+        self.scene_pc_raw = None
+        self.scene_pc = None
+        self.update_ee_pc_flag = False
+        self.ee_pc_raw = None
+        self.ee_pc = None
+
+        self.reference_frame = reference_frame
         self.arm_group_name = arm_group_name
         self.gripper_group_name = gripper_group_name
         self.planner_id = planner_id    
     
         rospy.init_node('edf_env_ros_interface', anonymous=True)
-        self.moveit_interface = EdfMoveitInterface(pose_reference_frame=self.pose_reference_frame, arm_group_name=self.arm_group_name, gripper_group_name=self.gripper_group_name, planner_id=planner_id, init_node=False, moveit_commander_argv=sys.argv)
+        self.moveit_interface = EdfMoveitInterface(pose_reference_frame=self.reference_frame, arm_group_name=self.arm_group_name, gripper_group_name=self.gripper_group_name, planner_id=planner_id, init_node=False, moveit_commander_argv=sys.argv)
         # self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', UpdatePointCloud)
         self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', Empty)
         self.scene_pc_sub = rospy.Subscriber('scene_pointcloud', PointCloud2, callback=self._scene_pc_callback)
+        self.request_ee_pc_update = rospy.ServiceProxy('update_ee_pointcloud', Empty)
+        self.ee_pc_sub = rospy.Subscriber('ee_pointcloud', PointCloud2, callback=self._ee_pc_callback)
         self.tf_Buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_Buffer)
+        self.clear_octomap = rospy.ServiceProxy('clear_octomap', Empty)
 
         self.min_gripper_val = 0.0
         self.max_gripper_val = 0.725
 
-
-        self.update_scene_pc_flag = False
-        self.scene_pc_raw = None
-        self.scene_pc = None
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
+        self.update_ee_pc(request_update=False, timeout_sec=10.0)
 
     def get_frame(self, target_frame: str, source_frame: str):
         trans = self.tf_Buffer.lookup_transform(target_frame=source_frame, source_frame=target_frame, time = rospy.Time()) # transform is inverse of the frame
@@ -131,7 +136,7 @@ class EdfRosInterface(EdfInterface):
 
         return pos, Rotation.from_quat(orn)
     
-    def change_frame(self, points: np.ndarray, target_frame: str, source_frame: str, orns: Optional[np.ndarray] = None):
+    def transform_frame(self, points: np.ndarray, target_frame: str, source_frame: str, orns: Optional[np.ndarray] = None):
         assert points.ndim == 2 and points.shape[-1] == 3
         if orns is not None:
             assert orns.ndim == 2 and orns.shape[-1] == 3
@@ -152,6 +157,13 @@ class EdfRosInterface(EdfInterface):
         if self.update_scene_pc_flag is True:
             self.scene_pc_raw = data
             self.update_scene_pc_flag = False
+        else:
+            pass
+
+    def _ee_pc_callback(self, data: PointCloud2):
+        if self.update_ee_pc_flag is True:
+            self.ee_pc_raw = data
+            self.update_ee_pc_flag = False
         else:
             pass
 
@@ -178,15 +190,48 @@ class EdfRosInterface(EdfInterface):
             
         if success:
             rospy.loginfo(f"Processing received scene point cloud...")
+            self.clear_octomap()
             points, colors = decode_pc(pointcloud2_to_array(self.scene_pc_raw))
-            self.scene_pc = self.change_frame(points=points, target_frame=self.pose_reference_frame, source_frame=self.pointcloud_frame), colors
+            self.scene_pc = self.transform_frame(points=points, target_frame=self.reference_frame, source_frame=self.scene_pc_raw.header.frame_id), colors
             rospy.loginfo(f"Scene pointcloud update success!")
             return True
         else:
             rospy.loginfo(f"Scene pointcloud update failed!")
             return False
+        
+    def update_ee_pc(self, request_update: bool = True, timeout_sec: float = 5.0) -> bool:
+        rospy.loginfo(f"Commencing end-effector point cloud update...")
+        if request_update:
+            self.request_ee_pc_update()
+        self.update_ee_pc_flag = True
 
-    def observe_scene(self, obs_type: str ='pointcloud', update: bool = True, frame: str = "scene") -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
+
+        rate = rospy.Rate(20)
+        success = False
+        init_time = time.time()
+        while not rospy.is_shutdown():
+            if self.update_ee_pc_flag is False:
+                success = True
+                break
+            
+            if time.time() - init_time > timeout_sec:
+                rospy.loginfo(f"Timeout: End-effector pointcloud data subscription took more than {timeout_sec} seconds.")
+                break
+            else:
+                rate.sleep()
+            
+        if success:
+            rospy.loginfo(f"Processing received end-effector point cloud...")
+            # self.clear_octomap()
+            points, colors = decode_pc(pointcloud2_to_array(self.ee_pc_raw))
+            self.ee_pc = points, colors
+            rospy.loginfo(f"End-effector pointcloud update success!")
+            return True
+        else:
+            rospy.loginfo(f"End-effector pointcloud update failed!")
+            return False
+
+    def observe_scene(self, obs_type: str ='pointcloud', update: bool = True) -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
         if obs_type == 'pointcloud':
             if update:
                 update_result = self.update_scene_pc(request_update=True)
@@ -201,8 +246,20 @@ class EdfRosInterface(EdfInterface):
         else:
             raise ValueError("Wrong observation type is given.")
 
-    def observe_ee(self, obs_type: str ='pointcloud', update: bool = True):
-        raise NotImplementedError
+    def observe_ee(self, obs_type: str ='pointcloud', update: bool = True) -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
+        if obs_type == 'pointcloud':
+            if update:
+                update_result = self.update_ee_pc(request_update=True)
+                if update_result is True:
+                    return self.ee_pc
+                else:
+                    return False
+            else:
+                return self.ee_pc
+        elif obs_type == 'image':
+            raise NotImplementedError
+        else:
+            raise ValueError("Wrong observation type is given.")
 
     def move_to_target_pose(self, poses: np.ndarray) -> Tuple[List[bool], Optional[np.ndarray]]:
         assert poses.ndim == 2 and poses.shape[-1] == 7 # [[qw,qx,qy,qz,x,y,z], ...]
