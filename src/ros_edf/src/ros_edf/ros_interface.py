@@ -286,6 +286,8 @@ class EdfRosInterface(EdfInterface):
 
     def pick(self, target_poses: np.ndarray) -> Tuple[List[bool], Optional[np.ndarray], bool, Optional[List[bool]], Optional[np.ndarray]]:
         assert target_poses.ndim == 2 and target_poses.shape[-1] == 7 # [[qw,qx,qy,qz,x,y,z], ...]
+        if target_poses.dtype == np.float32 or target_poses.dtype == np.float16:
+            target_poses = target_poses.astype(np.float64)
 
         release_result: bool = self.release()
 
