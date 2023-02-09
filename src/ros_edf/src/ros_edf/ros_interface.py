@@ -30,15 +30,18 @@ from edf_env.utils import CamData
 
 
 class EdfMoveitInterface():
-    def __init__(self, pose_reference_frame: str, 
-                 arm_group_name: str = "arm",
-                 gripper_group_name: str = "gripper",
-                 planner_id: str = "BiTRRT",
-                 init_node: bool = False, 
+    def __init__(self, init_node: bool = False, 
                  moveit_commander_argv = sys.argv):
         moveit_commander.roscpp_initialize(moveit_commander_argv)
         if init_node:
             rospy.init_node('edf_moveit_interface', anonymous=True)
+        self.initialized = False
+
+    def initialize(self, pose_reference_frame: str, 
+                   arm_group_name: str = "arm",
+                   gripper_group_name: str = "gripper",
+                   planner_id: str = "BiTRRT"):
+        assert self.initialized == False, "Cannot initialize EDF MoveIt Interface, because it has already been initialized."
 
         self.robot_com = moveit_commander.RobotCommander()
         self.scene_intf = moveit_commander.PlanningSceneInterface()
@@ -52,8 +55,12 @@ class EdfMoveitInterface():
         self.gripper_group = moveit_commander.MoveGroupCommander(self.gripper_group_name)
         self.gripper_group.set_planning_time(0.5)
 
+        self.initialized = True
+
     def plan_pose(self, pos: np.ndarray, orn: np.ndarray,
                   versor_comes_first: bool = False) -> Tuple[bool, Any, float, int]:
+        if not self.initialized:
+            raise RuntimeError("EDF MoveIt Interface is not initialized.")
         assert pos.ndim == 1 and pos.shape[-1] == 3 and orn.ndim == 1 and orn.shape[-1] == 4 # Quaternion
 
         pose_goal = Pose()
@@ -71,6 +78,8 @@ class EdfMoveitInterface():
 
     def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
                   versor_comes_first: bool = False) -> bool:
+        if not self.initialized:
+            raise RuntimeError("EDF MoveIt Interface is not initialized.")
         success, plan, planning_time, error_code = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first)
         if success is True:
             result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
@@ -83,6 +92,8 @@ class EdfMoveitInterface():
             return False
 
     def control_gripper(self, gripper_val: float) -> bool:
+        if not self.initialized:
+            raise RuntimeError("EDF MoveIt Interface is not initialized.")
         joint_goal = self.gripper_group.get_current_joint_values()
         joint_goal[0] = gripper_val
         self.gripper_group.clear_pose_targets()
@@ -98,7 +109,8 @@ class EdfRosInterface(EdfInterface):
     def __init__(self, reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
-                 planner_id: str = "BiTRRT"):
+                 planner_id: str = "BiTRRT",
+                 moveit_commander_argv: List[str] = sys.argv):
 
         self.update_scene_pc_flag = False
         self.scene_pc_raw = None
@@ -112,8 +124,10 @@ class EdfRosInterface(EdfInterface):
         self.gripper_group_name = gripper_group_name
         self.planner_id = planner_id    
     
+        self.moveit_interface = EdfMoveitInterface(init_node=False, moveit_commander_argv=moveit_commander_argv)
         rospy.init_node('edf_env_ros_interface', anonymous=True)
-        self.moveit_interface = EdfMoveitInterface(pose_reference_frame=self.reference_frame, arm_group_name=self.arm_group_name, gripper_group_name=self.gripper_group_name, planner_id=planner_id, init_node=False, moveit_commander_argv=sys.argv)
+        self.moveit_interface = self.moveit_interface.initialize(pose_reference_frame=self.reference_frame, arm_group_name=self.arm_group_name, gripper_group_name=self.gripper_group_name, planner_id=planner_id)
+
         # self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', UpdatePointCloud)
         self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', Empty)
         self.scene_pc_sub = rospy.Subscriber('scene_pointcloud', PointCloud2, callback=self._scene_pc_callback)
