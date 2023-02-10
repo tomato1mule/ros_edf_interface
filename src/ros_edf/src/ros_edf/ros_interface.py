@@ -163,6 +163,8 @@ class EdfMoveitInterface():
         self.scene_intf.remove_attached_object(name=obj_name, link=link)
         time.sleep(0.1)
         self.scene_intf.remove_world_object(name=obj_name)
+        time.sleep(0.1)
+        self.scene_intf.remove_world_object(name=obj_name)
 
 
     # def attach_pcd(self, pcd: o3d.cuda.pybind.geometry.PointCloud, 
