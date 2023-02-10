@@ -5,6 +5,7 @@ from typing import Optional, Tuple, List, Union, Any
 
 import numpy as np
 from scipy.spatial.transform import Rotation
+import open3d as o3d
 
 import rospy
 import actionlib
@@ -18,14 +19,19 @@ from sensor_msgs.msg import JointState, PointCloud2, Image
 from std_msgs.msg import Header, Duration
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryFeedback, FollowJointTrajectoryResult, JointTolerance
 from trajectory_msgs.msg import JointTrajectory
-from geometry_msgs.msg import TransformStamped, Pose
+from geometry_msgs.msg import TransformStamped, Pose, Point
 from std_srvs.srv import Empty, EmptyRequest, EmptyResponse
+from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
 # from ros_edf.srv import UpdatePointCloud, UpdatePointCloudRequest, UpdatePointCloudResponse
 
 from edf_env.env import UR5Env
 from edf_env.pc_utils import encode_pc, decode_pc
 from edf_env.interface import EdfInterface
 from edf_env.utils import CamData
+
+from ros_edf.pc_utils import reconstruct_surface, mesh_o3d_to_ros
+
+
 
 
 
@@ -51,6 +57,16 @@ class EdfMoveitInterface():
         self.gripper_group_name = gripper_group_name
         self.gripper_group = moveit_commander.MoveGroupCommander(self.gripper_group_name)
         self.gripper_group.set_planning_time(0.5)
+
+        self.eef_child_links =  ['robotiq_85_base_link',
+                                 'left_outer_knuckle',
+                                 'left_outer_finger',
+                                 'left_inner_knuckle',
+                                 'left_inner_finger',
+                                 'right_inner_knuckle',
+                                 'right_inner_finger',
+                                 'right_outer_knuckle',
+                                 'right_outer_finger']
 
     def has_eef(self) -> bool:
         return self.arm_group.has_end_effector_link()
@@ -99,6 +115,61 @@ class EdfMoveitInterface():
         self.gripper_group.stop()
 
         return result
+
+    def attach_mesh(self, mesh: o3d.cuda.pybind.geometry.TriangleMesh, 
+                    obj_name: str = "eef", frame: Optional[str] = None,
+                    pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
+                    link: Optional[str] = None, touch_links: Optional[List[str]] = None):
+        assert pos.ndim == orn.ndim == 1 and len(pos) == 3 and len(orn) == 4
+        if link is None:
+            link = self.get_eef_link_name()
+            if touch_links is None:
+                touch_links = [link] + self.eef_child_links
+        else:
+            if touch_links is None:
+                touch_links = [link]
+        if frame is None:
+            frame = link
+
+
+        ##### Create Collision Object #####
+        co = CollisionObject()
+        co.operation = CollisionObject.ADD
+        co.id = obj_name
+        # co.header.stamp = rospy.Time.now()
+        co.header.frame_id = frame
+        pose_msg = Pose()
+        pose_msg.position.x, pose_msg.position.y, pose_msg.position.z = pos
+        if versor_comes_first:
+            pose_msg.orientation.w, pose_msg.orientation.x, pose_msg.orientation.y, pose_msg.orientation.z = orn
+        else:
+            pose_msg.orientation.x, pose_msg.orientation.y, pose_msg.orientation.z, pose_msg.orientation.w = orn
+        co.pose = pose_msg
+        co.meshes = [mesh_o3d_to_ros(mesh)]
+        co.mesh_poses = [pose_msg]
+
+        ##### Attach Collision Object #####
+        aco = AttachedCollisionObject()
+        aco.object = co
+        aco.link_name = link
+        aco.touch_links = touch_links
+
+        ##### Submit #####
+        self.scene_intf._PlanningSceneInterface__submit(aco, attach=True)
+
+    def remove_attached_object(self, obj_name: str = "eef", link: Optional[str] = None):
+        if link is None:
+            link = self.get_eef_link_name()
+        self.scene_intf.remove_attached_object(name=obj_name, link=link)
+        time.sleep(0.1)
+        self.scene_intf.remove_world_object(name=obj_name)
+
+
+    # def attach_pcd(self, pcd: o3d.cuda.pybind.geometry.PointCloud, 
+    #                obj_name: str, frame: Optional[str] = None,
+    #                pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
+    #                link: Optional[str] = None, touch_links: Optional[List[str]] = None):
+
     
 
 
@@ -296,6 +367,13 @@ class EdfRosInterface(EdfInterface):
     def release(self) -> bool:
         grasp_result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
         return grasp_result
+    
+    def attach(self, pcd: o3d.cuda.pybind.geometry.PointCloud):
+        mesh: o3d.cuda.pybind.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
+        self.moveit_interface.attach_mesh(mesh = mesh, obj_name="eef")
+
+    def detach(self):
+        self.moveit_interface.remove_attached_object(obj_name="eef")
 
     def move_and_observe(self, obs_type: str ='pointcloud'): 
         observe_traj = np.array([[0.0, 0.0, 1.0, 0.0, 0.00, 0.0, 0.6],
