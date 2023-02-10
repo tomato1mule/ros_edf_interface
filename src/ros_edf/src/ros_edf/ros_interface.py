@@ -90,7 +90,7 @@ class EdfMoveitInterface():
         self.gripper_group.stop()
 
         return result
-
+    
 
 
 
@@ -283,6 +283,23 @@ class EdfRosInterface(EdfInterface):
         grasp_result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
         return grasp_result
 
+    def move_and_observe(self, obs_type: str ='pointcloud'): 
+        observe_traj = np.array([[0.0, 0.0, 1.0, 0.0, 0.00, 0.0, 0.6],
+                                 [np.sqrt(1/2), 0.0, np.sqrt(1/2), 0.0, 0.00, 0.0, 0.55],
+                                 [1.0, 0.0, 0.0, 0.0, 0.00, 0.0, 0.5]
+                                 ])
+        rospy.loginfo("Moving to observation pose")
+        for observe_pose in observe_traj:
+            move_results, observe_pose = self.move_to_target_pose(poses = observe_pose[None,:])
+            move_result = move_results[-1]
+            if not move_result:
+                rospy.loginfo("Failed to arrive obseravation pose.")
+                break
+
+        if move_result:
+            return self.observe_ee(obs_type=obs_type, update=True)
+        else:
+            return None
 
     def pick(self, target_poses: np.ndarray) -> Tuple[List[bool], Optional[np.ndarray], bool, Optional[List[bool]], Optional[np.ndarray]]:
         assert target_poses.ndim == 2 and target_poses.shape[-1] == 7 # [[qw,qx,qy,qz,x,y,z], ...]
