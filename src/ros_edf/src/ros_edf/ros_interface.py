@@ -52,6 +52,15 @@ class EdfMoveitInterface():
         self.gripper_group = moveit_commander.MoveGroupCommander(self.gripper_group_name)
         self.gripper_group.set_planning_time(0.5)
 
+    def has_eef(self) -> bool:
+        return self.arm_group.has_end_effector_link()
+    
+    def get_eef_link_name(self) -> Optional[str]:
+        if self.has_eef():
+            return self.arm_group.get_end_effector_link()
+        else:
+            None
+
     def plan_pose(self, pos: np.ndarray, orn: np.ndarray,
                   versor_comes_first: bool = False) -> Tuple[bool, Any, float, int]:
         assert pos.ndim == 1 and pos.shape[-1] == 3 and orn.ndim == 1 and orn.shape[-1] == 4 # Quaternion
@@ -103,9 +112,9 @@ class EdfRosInterface(EdfInterface):
         self.update_scene_pc_flag = False
         self.scene_pc_raw = None
         self.scene_pc = None
-        self.update_ee_pc_flag = False
-        self.ee_pc_raw = None
-        self.ee_pc = None
+        self.update_eef_pc_flag = False
+        self.eef_pc_raw = None
+        self.eef_pc = None
 
         self.reference_frame = reference_frame
         self.arm_group_name = arm_group_name
@@ -117,8 +126,8 @@ class EdfRosInterface(EdfInterface):
         # self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', UpdatePointCloud)
         self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', Empty)
         self.scene_pc_sub = rospy.Subscriber('scene_pointcloud', PointCloud2, callback=self._scene_pc_callback)
-        self.request_ee_pc_update = rospy.ServiceProxy('update_ee_pointcloud', Empty)
-        self.ee_pc_sub = rospy.Subscriber('ee_pointcloud', PointCloud2, callback=self._ee_pc_callback)
+        self.request_eef_pc_update = rospy.ServiceProxy('update_eef_pointcloud', Empty)
+        self.eef_pc_sub = rospy.Subscriber('eef_pointcloud', PointCloud2, callback=self._eef_pc_callback)
         self.tf_Buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_Buffer)
         self.clear_octomap = rospy.ServiceProxy('clear_octomap', Empty)
@@ -126,8 +135,13 @@ class EdfRosInterface(EdfInterface):
         self.min_gripper_val = 0.0
         self.max_gripper_val = 0.725
 
+        self.eef_link_name = self.moveit_interface.get_eef_link_name()
+        if not self.eef_link_name:
+            rospy.logerr("There is no end-effector!")
+            raise RuntimeError("There is no end-effector!")
+
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
-        self.update_ee_pc(request_update=False, timeout_sec=10.0)
+        self.update_eef_pc(request_update=False, timeout_sec=10.0)
 
     def get_frame(self, target_frame: str, source_frame: str):
         trans = self.tf_Buffer.lookup_transform(target_frame=source_frame, source_frame=target_frame, time = rospy.Time()) # transform is inverse of the frame
@@ -160,10 +174,10 @@ class EdfRosInterface(EdfInterface):
         else:
             pass
 
-    def _ee_pc_callback(self, data: PointCloud2):
-        if self.update_ee_pc_flag is True:
-            self.ee_pc_raw = data
-            self.update_ee_pc_flag = False
+    def _eef_pc_callback(self, data: PointCloud2):
+        if self.update_eef_pc_flag is True:
+            self.eef_pc_raw = data
+            self.update_eef_pc_flag = False
         else:
             pass
 
@@ -199,18 +213,18 @@ class EdfRosInterface(EdfInterface):
             rospy.loginfo(f"Scene pointcloud update failed!")
             return False
         
-    def update_ee_pc(self, request_update: bool = True, timeout_sec: float = 5.0) -> bool:
+    def update_eef_pc(self, request_update: bool = True, timeout_sec: float = 5.0) -> bool:
         rospy.loginfo(f"Commencing end-effector point cloud update...")
         if request_update:
-            self.request_ee_pc_update()
-        self.update_ee_pc_flag = True
+            self.request_eef_pc_update()
+        self.update_eef_pc_flag = True
 
 
         rate = rospy.Rate(20)
         success = False
         init_time = time.time()
         while not rospy.is_shutdown():
-            if self.update_ee_pc_flag is False:
+            if self.update_eef_pc_flag is False:
                 success = True
                 break
             
@@ -223,8 +237,8 @@ class EdfRosInterface(EdfInterface):
         if success:
             rospy.loginfo(f"Processing received end-effector point cloud...")
             # self.clear_octomap()
-            points, colors = decode_pc(pointcloud2_to_array(self.ee_pc_raw))
-            self.ee_pc = points, colors
+            points, colors = decode_pc(pointcloud2_to_array(self.eef_pc_raw))
+            self.eef_pc = points, colors
             rospy.loginfo(f"End-effector pointcloud update success!")
             return True
         else:
@@ -246,16 +260,16 @@ class EdfRosInterface(EdfInterface):
         else:
             raise ValueError("Wrong observation type is given.")
 
-    def observe_ee(self, obs_type: str ='pointcloud', update: bool = True) -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
+    def observe_eef(self, obs_type: str ='pointcloud', update: bool = True) -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
         if obs_type == 'pointcloud':
             if update:
-                update_result = self.update_ee_pc(request_update=True)
+                update_result = self.update_eef_pc(request_update=True)
                 if update_result is True:
-                    return self.ee_pc
+                    return self.eef_pc
                 else:
                     return False
             else:
-                return self.ee_pc
+                return self.eef_pc
         elif obs_type == 'image':
             raise NotImplementedError
         else:
@@ -297,7 +311,7 @@ class EdfRosInterface(EdfInterface):
                 break
 
         if move_result:
-            return self.observe_ee(obs_type=obs_type, update=True)
+            return self.observe_eef(obs_type=obs_type, update=True)
         else:
             return None
 
