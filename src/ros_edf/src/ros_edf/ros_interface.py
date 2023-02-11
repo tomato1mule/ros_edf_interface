@@ -1,7 +1,7 @@
 import sys
 import time
 import threading
-from typing import Optional, Tuple, List, Union, Any
+from typing import Optional, Tuple, List, Union, Any, Iterable
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -15,13 +15,13 @@ from ros_numpy.image import numpy_to_image
 
 import moveit_commander
 
-from sensor_msgs.msg import JointState, PointCloud2, Image
+from sensor_msgs.msg import JointState, PointCloud2, Image, JointState
 from std_msgs.msg import Header, Duration
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryFeedback, FollowJointTrajectoryResult, JointTolerance
 from trajectory_msgs.msg import JointTrajectory
 from geometry_msgs.msg import TransformStamped, Pose, Point
 from std_srvs.srv import Empty, EmptyRequest, EmptyResponse
-from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
+from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, RobotState
 # from ros_edf.srv import UpdatePointCloud, UpdatePointCloudRequest, UpdatePointCloudResponse
 
 from edf_env.env import UR5Env
@@ -30,6 +30,7 @@ from edf_env.interface import EdfInterface
 from edf_env.utils import CamData
 
 from ros_edf.pc_utils import reconstruct_surface, mesh_o3d_to_ros
+
 
 
 
@@ -78,7 +79,8 @@ class EdfMoveitInterface():
             None
 
     def plan_pose(self, pos: np.ndarray, orn: np.ndarray,
-                  versor_comes_first: bool = False) -> Tuple[bool, Any, float, int]:
+                  versor_comes_first: bool = False,
+                  start_state: Optional[RobotState] = None) -> Tuple[bool, Any, Tuple[float, int]]:
         assert pos.ndim == 1 and pos.shape[-1] == 3 and orn.ndim == 1 and orn.shape[-1] == 4 # Quaternion
 
         pose_goal = Pose()
@@ -89,14 +91,50 @@ class EdfMoveitInterface():
             pose_goal.orientation.x, pose_goal.orientation.y, pose_goal.orientation.z, pose_goal.orientation.w = orn 
 
         self.arm_group.clear_pose_targets()
+        if start_state is not None:
+            self.arm_group.set_start_state(msg=start_state)
+        else:
+            self.arm_group.set_start_state_to_current_state()
         self.arm_group.set_pose_target(pose_goal)
-        success, plan, planning_time, error_code = self.arm_group.plan()
 
-        return success, plan, planning_time, error_code
+        success, plan, planning_time, error_code = self.arm_group.plan()
+        plan_info: Tuple[float, int] = (planning_time, error_code)
+
+        return success, plan, plan_info
+    
+    def plan_pose_checkpoints(self, positions: Iterable[np.ndarray], 
+                              orns: Iterable[np.ndarray],
+                              versor_comes_first: bool = False) -> Tuple[List[bool], List, List[Tuple[float, int]]]:
+        assert len(positions) == len(orns)
+
+        start_state = None
+        results: List[bool] = []
+        plans: List = []
+        plan_infos: List[Tuple[float, int]] = []
+        for pos, orn in zip(positions, orns):
+            success, plan, plan_info = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first, start_state=start_state)
+            results.append(success)
+            plans.append(plan)
+            plan_infos.append(plan_info)
+
+            if success:
+                joint_state = JointState()
+                joint_state.header = plan.joint_trajectory.header
+                joint_state.header.stamp = rospy.Time.now()
+                joint_state.name = plan.joint_trajectory.joint_names
+                joint_state.position = plan.joint_trajectory.points[-1].positions
+                joint_state.velocity = plan.joint_trajectory.points[-1].velocities
+                start_state = RobotState(joint_state = joint_state)
+            
+            else:
+                break
+
+        return results, plans, plan_infos
 
     def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
-                  versor_comes_first: bool = False) -> bool:
-        success, plan, planning_time, error_code = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first)
+                     versor_comes_first: bool = False) -> bool:
+        success, plan, plan_info = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first)
+        planning_time, error_code = plan_info
         if success is True:
             result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
             rospy.loginfo(f"Execution result: {result}")
@@ -106,6 +144,24 @@ class EdfMoveitInterface():
             rospy.loginfo(f"Plan failed. ErrorCode: {error_code}")
             self.arm_group.stop()
             return False
+        
+    def follow_checkpoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
+        results, plans, plan_infos = self.plan_pose_checkpoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
+        plan_success = results[-1]
+
+        results = []
+        execution_success = True
+        if plan_success is True:
+            for i, plan in enumerate(plans):
+                result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
+                rospy.loginfo(f"Pose_{i} Execution success: {result}")
+                self.arm_group.stop()
+                if not result:
+                    execution_success = False
+                    break
+
+        rospy.loginfo(f"Follow Checkpoints Execution success: {execution_success}")
+        return execution_success
 
     def control_gripper(self, gripper_val: float) -> bool:
         joint_goal = self.gripper_group.get_current_joint_values()
