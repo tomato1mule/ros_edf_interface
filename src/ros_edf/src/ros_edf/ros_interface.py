@@ -24,12 +24,11 @@ from std_srvs.srv import Empty, EmptyRequest, EmptyResponse
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, RobotState
 # from ros_edf.srv import UpdatePointCloud, UpdatePointCloudRequest, UpdatePointCloudResponse
 
-from edf_env.env import UR5Env
-from edf_env.pc_utils import encode_pc, decode_pc
-from edf_env.interface import EdfInterface
-from edf_env.utils import CamData
 
-from ros_edf.pc_utils import reconstruct_surface, mesh_o3d_to_ros
+import torch
+
+from edf.data import SE3, PointCloud
+from ros_edf.pc_utils import reconstruct_surface, mesh_o3d_to_ros, decode_pc
 
 
 
@@ -83,6 +82,10 @@ class EdfMoveitInterface():
                   versor_comes_first: bool = False,
                   start_state: Optional[RobotState] = None) -> Tuple[bool, Any, Tuple[float, int]]:
         assert pos.ndim == 1 and pos.shape[-1] == 3 and orn.ndim == 1 and orn.shape[-1] == 4 # Quaternion
+        if pos.dtype == np.float32 or pos.dtype == np.float16:
+            pos = pos.astype(np.float64)
+        if orn.dtype == np.float32 or orn.dtype == np.float16:
+            orn = orn.astype(np.float64)
 
         pose_goal = Pose()
         pose_goal.position.x, pose_goal.position.y, pose_goal.position.z  = pos
@@ -160,13 +163,15 @@ class EdfMoveitInterface():
                 if not result:
                     execution_success = False
                     break
+        else:
+            execution_success = False
 
         rospy.loginfo(f"Execution success: {execution_success}")
         return execution_success
 
     def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
                      versor_comes_first: bool = False) -> bool:
-        return self.follow_checkpoints(self, positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
+        return self.follow_checkpoints(positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
 
 
     def control_gripper(self, gripper_val: float) -> bool:
@@ -238,7 +243,7 @@ class EdfMoveitInterface():
 
 
 
-class EdfRosInterface(EdfInterface):
+class EdfRosInterface():
     def __init__(self, reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
@@ -380,45 +385,45 @@ class EdfRosInterface(EdfInterface):
             rospy.loginfo(f"End-effector pointcloud update failed!")
             return False
 
-    def observe_scene(self, obs_type: str ='pointcloud', update: bool = True) -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
+    def observe_scene(self, obs_type: str ='pointcloud', update: bool = True) -> Union[bool, PointCloud]:
         if obs_type == 'pointcloud':
             if update:
                 update_result = self.update_scene_pc(request_update=True)
                 if update_result is True:
-                    return self.scene_pc
+                    return PointCloud.from_numpy(points=self.scene_pc[0], colors=self.scene_pc[1])
                 else:
                     return False
             else:
-                return self.scene_pc
+                return PointCloud.from_numpy(points=self.scene_pc[0], colors=self.scene_pc[1])
         elif obs_type == 'image':
             raise NotImplementedError
         else:
             raise ValueError("Wrong observation type is given.")
 
-    def observe_eef(self, obs_type: str ='pointcloud', update: bool = True) -> Optional[Union[Tuple[np.ndarray, np.ndarray], List[CamData]]]:
+    def observe_eef(self, obs_type: str ='pointcloud', update: bool = True) -> Union[bool, PointCloud]:
         if obs_type == 'pointcloud':
             if update:
                 update_result = self.update_eef_pc(request_update=True)
                 if update_result is True:
-                    return self.eef_pc
+                    return PointCloud.from_numpy(points=self.eef_pc[0], colors=self.eef_pc[1])
                 else:
                     return False
             else:
-                return self.eef_pc
+                return PointCloud.from_numpy(points=self.eef_pc[0], colors=self.eef_pc[1])
         elif obs_type == 'image':
             raise NotImplementedError
         else:
             raise ValueError("Wrong observation type is given.")
 
-    def move_to_target_pose(self, poses: np.ndarray) -> Tuple[List[bool], Optional[np.ndarray]]:
-        assert poses.ndim == 2 and poses.shape[-1] == 7 # [[qw,qx,qy,qz,x,y,z], ...]
-
+    def move_to_target_pose(self, poses: SE3) -> Tuple[List[bool], Optional[SE3]]:
         results = []
+
+        poses = poses.poses
         for pose in poses:
-            result_ = self.moveit_interface.move_to_pose(pos=pose[4:], orn=pose[:4], versor_comes_first=True)
+            result_ = self.moveit_interface.move_to_pose(pos=pose[4:].detach().cpu().numpy(), orn=pose[:4].detach().cpu().numpy(), versor_comes_first=True)
             results.append(result_)
             if result_ is True:
-                result_pose = pose.copy()
+                result_pose = SE3(poses = pose.clone().unsqueeze(0), device=poses.device)
                 break
             else:
                 result_pose = None
@@ -432,38 +437,16 @@ class EdfRosInterface(EdfInterface):
         grasp_result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
         return grasp_result
     
-    def attach(self, pcd: o3d.cuda.pybind.geometry.PointCloud):
+    def attach(self, pcd: PointCloud):
+        pcd: o3d.cuda.pybind.geometry.PointCloud = pcd.to_pcd()
         mesh: o3d.cuda.pybind.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
         self.moveit_interface.attach_mesh(mesh = mesh, obj_name="eef")
 
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
 
-    def move_and_observe(self, obs_type: str ='pointcloud'): 
-        observe_traj = np.array([[0.0, 0.0, 1.0, 0.0, 0.00, 0.0, 0.6],
-                                 [np.sqrt(1/2), 0.0, np.sqrt(1/2), 0.0, 0.00, 0.0, 0.55],
-                                 [1.0, 0.0, 0.0, 0.0, 0.00, 0.0, 0.5]
-                                 ])
-        rospy.loginfo("Moving to observation pose")
-        for observe_pose in observe_traj:
-            move_results, observe_pose = self.move_to_target_pose(poses = observe_pose[None,:])
-            move_result = move_results[-1]
-            if not move_result:
-                rospy.loginfo("Failed to arrive obseravation pose.")
-                break
-
-        if move_result:
-            return self.observe_eef(obs_type=obs_type, update=True)
-        else:
-            return None
-
-    def pick(self, target_poses: np.ndarray) -> Tuple[List[bool], Optional[np.ndarray], bool, Optional[List[bool]], Optional[np.ndarray]]:
-        assert target_poses.ndim == 2 and target_poses.shape[-1] == 7 # [[qw,qx,qy,qz,x,y,z], ...]
-        if target_poses.dtype == np.float32 or target_poses.dtype == np.float16:
-            target_poses = target_poses.astype(np.float64)
-
+    def pick(self, target_poses: SE3) -> Tuple[List[bool], Optional[SE3], bool, Optional[List[bool]], Optional[SE3]]:
         release_result: bool = self.release()
-
         pre_grasp_results, grasp_pose = self.move_to_target_pose(poses = target_poses)
         
         if grasp_pose is None:
@@ -473,12 +456,12 @@ class EdfRosInterface(EdfInterface):
             final_pose = None
         else:
             grasp_result: bool = self.grasp()
-            post_grasp_poses = grasp_pose.reshape(1,7)
+            post_grasp_poses = grasp_pose.poses
 
             N_candidate_post_grasp = 5
-            post_grasp_poses = np.tile(post_grasp_poses, (N_candidate_post_grasp,1))
-            post_grasp_poses[:,-1] += np.linspace(0.3, 0.1, N_candidate_post_grasp)
-            post_grasp_results, final_pose = self.move_to_target_pose(poses = post_grasp_poses)
+            post_grasp_poses = post_grasp_poses.repeat(N_candidate_post_grasp,1)
+            post_grasp_poses[:,-1] += torch.linspace(0.3, 0.1, N_candidate_post_grasp, device=post_grasp_poses.device)
+            post_grasp_results, final_pose = self.move_to_target_pose(poses = SE3(post_grasp_poses))
 
         return pre_grasp_results, grasp_pose, grasp_result, post_grasp_results, final_pose
 

@@ -63,3 +63,54 @@ def mesh_o3d_to_ros(mesh: o3d.cuda.pybind.geometry.TriangleMesh) -> Mesh:
     mesh_ros.vertices = list(map(lambda x:Point(x=x[0], y=x[1], z=x[2]), mesh.vertices))
     
     return mesh_ros
+
+def encode_pc(points: np.ndarray, colors: np.ndarray) -> np.ndarray:
+    N = len(points)
+    assert len(colors) == N
+
+    #colors = colors * 255
+
+    pc = np.empty(N, dtype=[('x', np.float32),
+                            ('y', np.float32),
+                            ('z', np.float32),
+                            ('r', np.float32),
+                            ('g', np.float32),
+                            ('b', np.float32),
+                            ])
+
+    pc['x'] = points[:,0]
+    pc['y'] = points[:,1]
+    pc['z'] = points[:,2]
+    pc['r'] = colors[:,0]
+    pc['g'] = colors[:,1]
+    pc['b'] = colors[:,2]
+
+    return pc
+
+def decode_pc(cloud_array, remove_nans=True, dtype=np.float64):
+    '''
+    Pulls out points (x,y,z) and colors (r,g,b) form encoded point cloud array. 
+    Codes borrowed and modified from ros_numpy: https://github.com/eric-wieser/ros_numpy/blob/master/src/ros_numpy/point_cloud2.py
+    
+    Shape:
+    - points: (N, 3)
+    - colors: (N, 3)
+    '''
+    # remove crap points
+    if remove_nans:
+        mask = np.isfinite(cloud_array['x']) & np.isfinite(cloud_array['y']) & np.isfinite(cloud_array['z']) & np.isfinite(cloud_array['r']) & np.isfinite(cloud_array['g']) & np.isfinite(cloud_array['b'])
+        cloud_array = cloud_array[mask]
+    
+    # pull out x, y, and z values
+    points = np.zeros(cloud_array.shape + (3,), dtype=dtype)
+    points[...,0] = cloud_array['x']
+    points[...,1] = cloud_array['y']
+    points[...,2] = cloud_array['z']
+    
+    # pull out r, g, and b values
+    colors = np.zeros(cloud_array.shape + (3,), dtype=dtype)
+    colors[...,0] = cloud_array['r']
+    colors[...,1] = cloud_array['g']
+    colors[...,2] = cloud_array['b']
+
+    return points, colors
