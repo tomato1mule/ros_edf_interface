@@ -59,7 +59,8 @@ class EdfMoveitInterface():
         self.gripper_group = moveit_commander.MoveGroupCommander(self.gripper_group_name)
         self.gripper_group.set_planning_time(0.5)
 
-        self.eef_child_links =  ['robotiq_85_base_link',
+        # TODO
+        self.eef_child_links =  ['robotiq_85_base_link',     
                                  'left_outer_knuckle',
                                  'left_outer_finger',
                                  'left_inner_knuckle',
@@ -131,19 +132,19 @@ class EdfMoveitInterface():
 
         return results, plans, plan_infos
 
-    def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
-                     versor_comes_first: bool = False) -> bool:
-        success, plan, plan_info = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first)
-        planning_time, error_code = plan_info
-        if success is True:
-            result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-            rospy.loginfo(f"Execution result: {result}")
-            self.arm_group.stop()
-            return True
-        else:
-            rospy.loginfo(f"Plan failed. ErrorCode: {error_code}")
-            self.arm_group.stop()
-            return False
+    # def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
+    #                  versor_comes_first: bool = False) -> bool:
+    #     success, plan, plan_info = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first)
+    #     planning_time, error_code = plan_info
+    #     if success is True:
+    #         result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
+    #         rospy.loginfo(f"Execution result: {result}")
+    #         self.arm_group.stop()
+    #         return True
+    #     else:
+    #         rospy.loginfo(f"Plan failed. ErrorCode: {error_code}")
+    #         self.arm_group.stop()
+    #         return False
         
     def follow_checkpoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
         results, plans, plan_infos = self.plan_pose_checkpoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
@@ -154,14 +155,19 @@ class EdfMoveitInterface():
         if plan_success is True:
             for i, plan in enumerate(plans):
                 result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-                rospy.loginfo(f"Pose_{i} Execution success: {result}")
+                rospy.loginfo(f"Moving to Pose_{i}: (x,y,z) = ({positions[i][0]:.3f}, {positions[i][1]:.3f}, {positions[i][2]:.3f}), (qx,qy,qz,qw) = ({orns[i][0+versor_comes_first]:.3f}, {orns[i][1+versor_comes_first]:.3f}, {orns[i][2+versor_comes_first]:.3f}, {orns[i][(3+versor_comes_first)%4]:.3f}) || Success: {result}")
                 self.arm_group.stop()
                 if not result:
                     execution_success = False
                     break
 
-        rospy.loginfo(f"Follow Checkpoints Execution success: {execution_success}")
+        rospy.loginfo(f"Execution success: {execution_success}")
         return execution_success
+
+    def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
+                     versor_comes_first: bool = False) -> bool:
+        return self.follow_checkpoints(self, positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
+
 
     def control_gripper(self, gripper_val: float) -> bool:
         joint_goal = self.gripper_group.get_current_joint_values()
