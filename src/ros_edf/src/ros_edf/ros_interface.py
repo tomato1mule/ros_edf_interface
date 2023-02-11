@@ -46,6 +46,7 @@ class EdfMoveitInterface():
         if init_node:
             rospy.init_node('edf_moveit_interface', anonymous=True)
 
+        self.pose_reference_frame = pose_reference_frame
         self.robot_com = moveit_commander.RobotCommander()
         self.scene_intf = moveit_commander.PlanningSceneInterface()
         self.arm_group_name = arm_group_name
@@ -182,6 +183,33 @@ class EdfMoveitInterface():
         self.gripper_group.stop()
 
         return result
+    
+    def add_mesh(self, mesh: o3d.cuda.pybind.geometry.TriangleMesh, 
+                    obj_name: str, frame: Optional[str] = None,
+                    pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False):
+        
+        assert pos.ndim == orn.ndim == 1 and len(pos) == 3 and len(orn) == 4
+        if frame == None:
+            frame = self.pose_reference_frame
+
+        ##### Create Collision Object #####
+        co = CollisionObject()
+        co.operation = CollisionObject.ADD
+        co.id = obj_name
+        co.header.stamp = rospy.Time.now()
+        co.header.frame_id = frame
+        pose_msg = Pose()
+        pose_msg.position.x, pose_msg.position.y, pose_msg.position.z = pos
+        if versor_comes_first:
+            pose_msg.orientation.w, pose_msg.orientation.x, pose_msg.orientation.y, pose_msg.orientation.z = orn
+        else:
+            pose_msg.orientation.x, pose_msg.orientation.y, pose_msg.orientation.z, pose_msg.orientation.w = orn
+        co.pose = pose_msg
+        co.meshes = [mesh_o3d_to_ros(mesh)]
+        co.mesh_poses = [pose_msg]
+
+        self.scene_intf._PlanningSceneInterface__submit(co, attach=False)
+        
 
     def attach_mesh(self, mesh: o3d.cuda.pybind.geometry.TriangleMesh, 
                     obj_name: str = "eef", frame: Optional[str] = None,
@@ -203,7 +231,7 @@ class EdfMoveitInterface():
         co = CollisionObject()
         co.operation = CollisionObject.ADD
         co.id = obj_name
-        # co.header.stamp = rospy.Time.now()
+        co.header.stamp = rospy.Time.now()
         co.header.frame_id = frame
         pose_msg = Pose()
         pose_msg.position.x, pose_msg.position.y, pose_msg.position.z = pos
@@ -239,7 +267,9 @@ class EdfMoveitInterface():
     #                pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
     #                link: Optional[str] = None, touch_links: Optional[List[str]] = None):
 
-    
+    def clear(self):
+        # self.scene_intf.remove_attached_object()
+        self.scene_intf.remove_world_object()
 
 
 
@@ -286,6 +316,7 @@ class EdfRosInterface():
 
     def reset(self):
         self.reset_env()
+        self.moveit_interface.clear()
 
     def get_frame(self, target_frame: str, source_frame: str):
         trans = self.tf_Buffer.lookup_transform(target_frame=source_frame, source_frame=target_frame, time = rospy.Time()) # transform is inverse of the frame
@@ -441,6 +472,11 @@ class EdfRosInterface():
         grasp_result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
         return grasp_result
     
+    def add_obj(self, pcd: PointCloud, obj_name: str):
+        pcd: o3d.cuda.pybind.geometry.PointCloud = pcd.to_pcd()
+        mesh: o3d.cuda.pybind.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
+        self.moveit_interface.add_mesh(mesh = mesh, obj_name=obj_name)
+
     def attach(self, pcd: PointCloud):
         pcd: o3d.cuda.pybind.geometry.PointCloud = pcd.to_pcd()
         mesh: o3d.cuda.pybind.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
