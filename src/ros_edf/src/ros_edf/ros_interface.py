@@ -267,6 +267,7 @@ class EdfRosInterface():
         self.request_scene_pc_update = rospy.ServiceProxy('update_scene_pointcloud', Empty)
         self.scene_pc_sub = rospy.Subscriber('scene_pointcloud', PointCloud2, callback=self._scene_pc_callback)
         self.request_eef_pc_update = rospy.ServiceProxy('update_eef_pointcloud', Empty)
+        self.reset_env = rospy.ServiceProxy('reset_env', Empty)
         self.eef_pc_sub = rospy.Subscriber('eef_pointcloud', PointCloud2, callback=self._eef_pc_callback)
         self.tf_Buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_Buffer)
@@ -282,6 +283,9 @@ class EdfRosInterface():
 
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
         self.update_eef_pc(request_update=False, timeout_sec=10.0)
+
+    def reset(self):
+        self.reset_env()
 
     def get_frame(self, target_frame: str, source_frame: str):
         trans = self.tf_Buffer.lookup_transform(target_frame=source_frame, source_frame=target_frame, time = rospy.Time()) # transform is inverse of the frame
