@@ -19,9 +19,9 @@ from sensor_msgs.msg import JointState, PointCloud2, Image, JointState
 from std_msgs.msg import Header, Duration
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryFeedback, FollowJointTrajectoryResult, JointTolerance
 from trajectory_msgs.msg import JointTrajectory
-from geometry_msgs.msg import TransformStamped, Pose, Point
+from geometry_msgs.msg import TransformStamped, Pose, Point, Quaternion
 from std_srvs.srv import Empty, EmptyRequest, EmptyResponse
-from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, RobotState
+from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, RobotState, RobotTrajectory
 # from ros_edf.srv import UpdatePointCloud, UpdatePointCloudRequest, UpdatePointCloudResponse
 
 
@@ -79,9 +79,23 @@ class EdfMoveitInterface():
         else:
             None
 
+    def get_current_pose(self, numpy: bool = False, versor_first: bool = False) -> Union[Pose, Tuple[np.ndarray]]:
+        pose: Pose = self.arm_group.get_current_pose().pose
+
+        if numpy is not True:
+            return pose
+        
+        else:
+            position = np.array([pose.position.x, pose.position.y, pose.position.z])
+            if versor_first is True:
+                orn = np.array([pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z])
+            else:
+                orn = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
+            return position, orn
+
     def plan_pose(self, pos: np.ndarray, orn: np.ndarray,
                   versor_comes_first: bool = False,
-                  start_state: Optional[RobotState] = None) -> Tuple[bool, Any, Tuple[float, int]]:
+                  start_state: Optional[RobotState] = None) -> Tuple[bool, RobotTrajectory, Tuple[float, int]]:
         assert pos.ndim == 1 and pos.shape[-1] == 3 and orn.ndim == 1 and orn.shape[-1] == 4 # Quaternion
         if pos.dtype == np.float32 or pos.dtype == np.float16:
             pos = pos.astype(np.float64)
@@ -107,14 +121,14 @@ class EdfMoveitInterface():
 
         return success, plan, plan_info
     
-    def plan_pose_checkpoints(self, positions: Iterable[np.ndarray], 
+    def plan_pose_waypoints(self, positions: Iterable[np.ndarray], 
                               orns: Iterable[np.ndarray],
-                              versor_comes_first: bool = False) -> Tuple[List[bool], List, List[Tuple[float, int]]]:
+                              versor_comes_first: bool = False) -> Tuple[List[bool], List[RobotTrajectory], List[Tuple[float, int]]]:
         assert len(positions) == len(orns)
 
         start_state = None
         results: List[bool] = []
-        plans: List = []
+        plans: List[RobotTrajectory] = []
         plan_infos: List[Tuple[float, int]] = []
         for pos, orn in zip(positions, orns):
             success, plan, plan_info = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first, start_state=start_state)
@@ -135,23 +149,9 @@ class EdfMoveitInterface():
                 break
 
         return results, plans, plan_infos
-
-    # def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
-    #                  versor_comes_first: bool = False) -> bool:
-    #     success, plan, plan_info = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first)
-    #     planning_time, error_code = plan_info
-    #     if success is True:
-    #         result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-    #         rospy.loginfo(f"Execution result: {result}")
-    #         self.arm_group.stop()
-    #         return True
-    #     else:
-    #         rospy.loginfo(f"Plan failed. ErrorCode: {error_code}")
-    #         self.arm_group.stop()
-    #         return False
         
-    def follow_checkpoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
-        results, plans, plan_infos = self.plan_pose_checkpoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
+    def follow_waypoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
+        results, plans, plan_infos = self.plan_pose_waypoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
         plan_success = results[-1]
 
         results = []
@@ -167,12 +167,63 @@ class EdfMoveitInterface():
         else:
             execution_success = False
 
+        rospy.loginfo(f"Follow waypoints success: {execution_success}")
+        return execution_success
+
+    def plan_cartesian(self, positions: Iterable[np.ndarray], 
+                        orns: Iterable[np.ndarray],
+                        cartesian_step: float,                 # One JointTrajectory point for each cartesian steps (in meters)
+                        cspace_step_thr: float,                    # Allowed jump threshold in C-space
+                        avoid_collision: bool = True,
+                        versor_comes_first: bool = False,
+                        ) -> Tuple[RobotTrajectory, float]:
+        waypoints: List[Pose] = []
+        # if start_from_current_pose:
+        #     waypoints.append(self.get_current_pose(numpy=False))
+        
+        for pos, orn in zip(positions, orns):
+            waypoints.append(Pose(position=Point(x=pos[0],y=pos[1],z=pos[2]), orientation=Quaternion(x=orn[0+versor_comes_first], y=orn[1+versor_comes_first], z=orn[2+versor_comes_first], w=orn[(3+versor_comes_first)%4])))
+
+        path, fraction = self.arm_group.compute_cartesian_path(waypoints=waypoints, eef_step=cartesian_step, jump_threshold=cspace_step_thr, avoid_collisions=avoid_collision)
+        return path, fraction
+
+    def follow_waypoints_cartesian(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray],
+                                   cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,
+                                   versor_comes_first: bool = False,
+                                   ) -> bool:
+
+        for i, (pos, orn) in enumerate(zip(positions, orns)):
+            rospy.loginfo(f"Following Cartesian Trajectory:")
+            rospy.loginfo(f"  - Pose_{i}: (x,y,z) = ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}), (qx,qy,qz,qw) = ({orn[0+versor_comes_first]:.3f}, {orn[1+versor_comes_first]:.3f}, {orn[2+versor_comes_first]:.3f}, {orn[(3+versor_comes_first)%4]:.3f})")
+
+        plan, fraction = self.plan_cartesian(positions=positions, orns=orns, 
+                                             cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, 
+                                             versor_comes_first=versor_comes_first)
+        if fraction >= min_fraction:
+            rospy.loginfo(f"Cartesian plan success!: Path fraction: {fraction}")
+            plan_success = True
+        else:
+            rospy.logwarn(f"Cartesian plan failed!: Path fraction: {fraction}")
+            plan_success = False
+        plan_infos = ()
+
+        results = []
+        execution_success = True
+        if plan_success is True:
+            result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
+            
+            self.arm_group.stop()
+            if not result:
+                execution_success = False
+        else:
+            execution_success = False
+
         rospy.loginfo(f"Execution success: {execution_success}")
         return execution_success
 
     def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
                      versor_comes_first: bool = False) -> bool:
-        return self.follow_checkpoints(positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
+        return self.follow_waypoints(positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
 
 
     def control_gripper(self, gripper_val: float) -> bool:
@@ -270,6 +321,7 @@ class EdfMoveitInterface():
     def clear(self):
         # self.scene_intf.remove_attached_object()
         self.scene_intf.remove_world_object()
+
 
 
 
@@ -463,6 +515,18 @@ class EdfRosInterface():
             else:
                 result_pose = None
         return results, result_pose
+    
+    def get_current_pose(self):
+        pos, orn = self.moveit_interface.get_current_pose(numpy=True, versor_first=True)
+        pose = torch.cat([torch.tensor(orn), torch.tensor(pos)], dim=0).type(torch.float32)
+        poses = SE3(poses=pose.unsqueeze(-2))
+        return poses
+    
+    def move_cartesian(self, poses: SE3, cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,) -> bool:
+        poses = poses.poses
+        result = self.moveit_interface.follow_waypoints_cartesian(positions=poses.detach().cpu().numpy()[...,4:].astype(np.float64), orns=poses.detach().cpu().numpy()[...,:4].astype(np.float64), versor_comes_first=True,
+                                                                  cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, min_fraction=min_fraction)
+        return result
 
     def grasp(self) -> bool:
         grasp_result = self.moveit_interface.control_gripper(gripper_val=self.max_gripper_val)
