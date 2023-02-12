@@ -118,6 +118,7 @@ class EdfMoveitInterface():
 
         success, plan, planning_time, error_code = self.arm_group.plan()
         plan_info: Tuple[float, int] = (planning_time, error_code)
+        rospy.loginfo(f"EDF Moveit inferface found plan! || length: {len(plan.joint_trajectory.points)}")
 
         return success, plan, plan_info
     
