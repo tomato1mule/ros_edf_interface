@@ -91,7 +91,7 @@ class EdfMoveitInterface():
                 orn = np.array([pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z])
             else:
                 orn = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
-            return position, orn
+            return position, orn / np.linalg.norm(orn, axis=-1, keepdims=True)
 
     def plan_pose(self, pos: np.ndarray, orn: np.ndarray,
                   versor_comes_first: bool = False,
@@ -101,6 +101,7 @@ class EdfMoveitInterface():
             pos = pos.astype(np.float64)
         if orn.dtype == np.float32 or orn.dtype == np.float16:
             orn = orn.astype(np.float64)
+        orn = orn / np.linalg.norm(orn, axis=-1, keepdims=True)
 
         pose_goal = Pose()
         pose_goal.position.x, pose_goal.position.y, pose_goal.position.z  = pos
@@ -118,7 +119,8 @@ class EdfMoveitInterface():
 
         success, plan, planning_time, error_code = self.arm_group.plan()
         plan_info: Tuple[float, int] = (planning_time, error_code)
-        rospy.loginfo(f"EDF Moveit inferface found plan! || length: {len(plan.joint_trajectory.points)}")
+        if success:
+            rospy.loginfo(f"EDF Moveit inferface found plan! || length: {len(plan.joint_trajectory.points)}")
 
         return success, plan, plan_info
     
@@ -152,7 +154,11 @@ class EdfMoveitInterface():
         return results, plans, plan_infos
         
     def follow_waypoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
+        rospy.loginfo("Begin planning")
         results, plans, plan_infos = self.plan_pose_waypoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
+        for i, result in enumerate(results):
+            rospy.loginfo(f"   - Pose_{i}: (x,y,z) = ({positions[i][0]:.3f}, {positions[i][1]:.3f}, {positions[i][2]:.3f}), (qx,qy,qz,qw) = ({orns[i][0+versor_comes_first]:.3f}, {orns[i][1+versor_comes_first]:.3f}, {orns[i][2+versor_comes_first]:.3f}, {orns[i][(3+versor_comes_first)%4]:.3f}) || Success: {result}")
+
         plan_success = results[-1]
 
         results = []
@@ -160,7 +166,6 @@ class EdfMoveitInterface():
         if plan_success is True:
             for i, plan in enumerate(plans):
                 result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-                rospy.loginfo(f"Moving to Pose_{i}: (x,y,z) = ({positions[i][0]:.3f}, {positions[i][1]:.3f}, {positions[i][2]:.3f}), (qx,qy,qz,qw) = ({orns[i][0+versor_comes_first]:.3f}, {orns[i][1+versor_comes_first]:.3f}, {orns[i][2+versor_comes_first]:.3f}, {orns[i][(3+versor_comes_first)%4]:.3f}) || Success: {result}")
                 self.arm_group.stop()
                 if not result:
                     execution_success = False
@@ -183,6 +188,7 @@ class EdfMoveitInterface():
         #     waypoints.append(self.get_current_pose(numpy=False))
         
         for pos, orn in zip(positions, orns):
+            orn = orn / np.linalg.norm(orn, axis=-1, keepdims=True)
             waypoints.append(Pose(position=Point(x=pos[0],y=pos[1],z=pos[2]), orientation=Quaternion(x=orn[0+versor_comes_first], y=orn[1+versor_comes_first], z=orn[2+versor_comes_first], w=orn[(3+versor_comes_first)%4])))
 
         path, fraction = self.arm_group.compute_cartesian_path(waypoints=waypoints, eef_step=cartesian_step, jump_threshold=cspace_step_thr, avoid_collisions=avoid_collision)
@@ -243,6 +249,7 @@ class EdfMoveitInterface():
         assert pos.ndim == orn.ndim == 1 and len(pos) == 3 and len(orn) == 4
         if frame == None:
             frame = self.pose_reference_frame
+        orn = orn / np.linalg.norm(orn, axis=-1, keepdims=True)
 
         ##### Create Collision Object #####
         co = CollisionObject()
@@ -277,6 +284,7 @@ class EdfMoveitInterface():
                 touch_links = [link]
         if frame is None:
             frame = link
+        orn = orn / np.linalg.norm(orn, axis=-1, keepdims=True)
 
 
         ##### Create Collision Object #####
@@ -373,6 +381,7 @@ class EdfRosInterface():
         trans = self.tf_Buffer.lookup_transform(target_frame=source_frame, source_frame=target_frame, time = rospy.Time()) # transform is inverse of the frame
         pos = np.array([trans.transform.translation.x, trans.transform.translation.y, trans.transform.translation.z])
         orn = np.array([trans.transform.rotation.x, trans.transform.rotation.y, trans.transform.rotation.z, trans.transform.rotation.w])
+        orn = orn / np.linalg.norm(orn, axis=-1, keepdims=True)
 
         return pos, Rotation.from_quat(orn)
     
@@ -391,7 +400,8 @@ class EdfRosInterface():
         if orns is None:
             return inv_orn.apply(points) + inv_pos
         else:
-            return inv_orn.apply(points) + inv_pos, (inv_orn * Rotation.from_quat(orns)).as_quat()
+            orns = (inv_orn * Rotation.from_quat(orns)).as_quat()
+            return inv_orn.apply(points) + inv_pos, orns / np.linalg.norm(orns, axis=-1, keepdims=True)
 
     def _scene_pc_callback(self, data: PointCloud2):
         if self.update_scene_pc_flag is True:
