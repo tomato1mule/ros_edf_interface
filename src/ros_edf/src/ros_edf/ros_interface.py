@@ -309,9 +309,6 @@ class EdfMoveitInterface():
         self.scene_intf.remove_attached_object(name=obj_name, link=link)
         time.sleep(0.1)
         self.scene_intf.remove_world_object(name=obj_name)
-        time.sleep(0.1)
-        self.scene_intf.remove_world_object(name=obj_name)
-
 
     # def attach_pcd(self, pcd: o3d.cuda.pybind.geometry.PointCloud, 
     #                obj_name: str, frame: Optional[str] = None,
@@ -319,10 +316,11 @@ class EdfMoveitInterface():
     #                link: Optional[str] = None, touch_links: Optional[List[str]] = None):
 
     def clear(self):
-        # self.scene_intf.remove_attached_object()
+        attached = self.scene_intf.get_attached_objects()
+        for obj_name, msg in attached.items(): # msg: AttachedCollisionObject
+            self.scene_intf.remove_attached_object(name=obj_name, link=msg.link_name)
+        time.sleep(0.1)
         self.scene_intf.remove_world_object()
-
-
 
 
 class EdfRosInterface():
