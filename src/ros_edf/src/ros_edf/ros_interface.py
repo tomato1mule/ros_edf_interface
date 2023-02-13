@@ -209,7 +209,7 @@ class EdfMoveitInterface():
 
         return result
     
-    def add_mesh(self, mesh: o3d.cuda.pybind.geometry.TriangleMesh, 
+    def add_mesh(self, mesh: o3d.geometry.TriangleMesh, 
                     obj_name: str, frame: Optional[str] = None,
                     pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False):
         
@@ -237,7 +237,7 @@ class EdfMoveitInterface():
         self.scene_intf._PlanningSceneInterface__submit(co, attach=False)
         
 
-    def attach_mesh(self, mesh: o3d.cuda.pybind.geometry.TriangleMesh, 
+    def attach_mesh(self, mesh: o3d.geometry.TriangleMesh, 
                     obj_name: str = "eef", frame: Optional[str] = None,
                     pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
                     link: Optional[str] = None, touch_links: Optional[List[str]] = None):
@@ -294,7 +294,7 @@ class EdfMoveitInterface():
         self.scene_intf.remove_world_object()
 
 
-    # def attach_pcd(self, pcd: o3d.cuda.pybind.geometry.PointCloud, 
+    # def attach_pcd(self, pcd: o3d.geometry.PointCloud, 
     #                obj_name: str, frame: Optional[str] = None,
     #                pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
     #                link: Optional[str] = None, touch_links: Optional[List[str]] = None):
@@ -584,13 +584,13 @@ class EdfRosInterface():
         return grasp_result
     
     def add_obj(self, pcd: PointCloud, obj_name: str):
-        pcd: o3d.cuda.pybind.geometry.PointCloud = pcd.to_pcd()
-        mesh: o3d.cuda.pybind.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
+        pcd: o3d.geometry.PointCloud = pcd.to_pcd()
+        mesh: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
         self.moveit_interface.add_mesh(mesh = mesh, obj_name=obj_name)
 
     def attach(self, pcd: PointCloud):
-        pcd: o3d.cuda.pybind.geometry.PointCloud = pcd.to_pcd()
-        mesh: o3d.cuda.pybind.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
+        pcd: o3d.geometry.PointCloud = pcd.to_pcd()
+        mesh: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
         self.moveit_interface.attach_mesh(mesh = mesh, obj_name="eef")
 
     def detach(self):

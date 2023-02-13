@@ -25,7 +25,7 @@ def pcd_from_numpy(coord: np.ndarray, color: Optional[np.ndarray], voxel_filter_
 
     return pcd
 
-def pcd_to_numpy(pcd: o3d.cuda.pybind.geometry.PointCloud) -> Tuple[np.ndarray, np.ndarray]:
+def pcd_to_numpy(pcd: o3d.geometry.PointCloud) -> Tuple[np.ndarray, np.ndarray]:
     points = np.asarray(pcd.points)
     colors = np.asarray(pcd.colors)
 
@@ -47,17 +47,17 @@ def draw_geometry(geometries):
     viewer.destroy_window()
 
 
-def reconstruct_surface(pcd: o3d.cuda.pybind.geometry.PointCloud) -> o3d.cuda.pybind.geometry.TriangleMesh:
+def reconstruct_surface(pcd: o3d.geometry.PointCloud) -> o3d.geometry.TriangleMesh:
     pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20,
                                             std_ratio=2.0)
     
     alpha = 0.015
-    mesh: o3d.cuda.pybind.geometry.TriangleMesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha)
+    mesh: o3d.geometry.TriangleMesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(pcd, alpha)
     # mesh.compute_vertex_normals()
     # o3d.visualization.draw_geometries([mesh], mesh_show_back_face=True)
     return mesh
 
-def mesh_o3d_to_ros(mesh: o3d.cuda.pybind.geometry.TriangleMesh) -> Mesh:
+def mesh_o3d_to_ros(mesh: o3d.geometry.TriangleMesh) -> Mesh:
     mesh_ros = Mesh()
     mesh_ros.triangles = list(map(lambda x:MeshTriangle(vertex_indices=x), mesh.triangles))
     mesh_ros.vertices = list(map(lambda x:Point(x=x[0], y=x[1], z=x[2]), mesh.vertices))
