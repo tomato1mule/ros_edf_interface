@@ -1,7 +1,8 @@
 import sys
 import time
 import threading
-from typing import Optional, Tuple, List, Union, Any, Iterable
+from typing import Optional, Tuple, List, Union, Any, Iterable, Dict
+import itertools
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -29,9 +30,6 @@ import torch
 
 from edf.data import SE3, PointCloud
 from ros_edf.pc_utils import reconstruct_surface, mesh_o3d_to_ros, decode_pc
-
-
-
 
 
 
@@ -92,16 +90,30 @@ class EdfMoveitInterface():
             else:
                 orn = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w])
             return position, orn / np.linalg.norm(orn, axis=-1, keepdims=True)
+        
+    def execute_plans(self, plans: Iterable[RobotTrajectory]) -> List[bool]:
+        results: List[bool] = []
+        for plan in plans:
+            result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
+            results.append(result)
+            self.arm_group.stop()
+            if not result:
+                break
+        return results
 
     def plan_pose(self, pos: np.ndarray, orn: np.ndarray,
                   versor_comes_first: bool = False,
-                  start_state: Optional[RobotState] = None) -> Tuple[bool, RobotTrajectory, Tuple[float, int]]:
+                  start_state: Optional[RobotState] = None) -> Tuple[bool, RobotTrajectory, RobotState, float, int]:
         assert pos.ndim == 1 and pos.shape[-1] == 3 and orn.ndim == 1 and orn.shape[-1] == 4 # Quaternion
-        if pos.dtype == np.float32 or pos.dtype == np.float16:
+        if pos.dtype != np.float64:
             pos = pos.astype(np.float64)
-        if orn.dtype == np.float32 or orn.dtype == np.float16:
+        if orn.dtype != np.float64:
             orn = orn.astype(np.float64)
-        orn = orn / np.linalg.norm(orn, axis=-1, keepdims=True)
+
+        orn_norm = np.linalg.norm(orn, axis=-1, keepdims=True)
+        if not np.allclose(orn_norm, 1., rtol=0, atol=0.01):
+            rospy.logwarn("EdfMoveitInterface.plan_pose():  Input quaternion is not normalized!")
+        orn = orn / orn_norm
 
         pose_goal = Pose()
         pose_goal.position.x, pose_goal.position.y, pose_goal.position.z  = pos
@@ -117,121 +129,76 @@ class EdfMoveitInterface():
             self.arm_group.set_start_state_to_current_state()
         self.arm_group.set_pose_target(pose_goal)
 
-        success, plan, planning_time, error_code = self.arm_group.plan()
-        plan_info: Tuple[float, int] = (planning_time, error_code)
+        planner_output = self.arm_group.plan()
+        success: bool = planner_output[0]
+        plan: RobotTrajectory = planner_output[1]
+        planning_time: float = planner_output[2]
+        error_code: int = planner_output[3]
+
         if success:
-            rospy.loginfo(f"EDF Moveit inferface found plan! || length: {len(plan.joint_trajectory.points)}")
-
-        return success, plan, plan_info
-    
-    def plan_pose_waypoints(self, positions: Iterable[np.ndarray], 
-                              orns: Iterable[np.ndarray],
-                              versor_comes_first: bool = False) -> Tuple[List[bool], List[RobotTrajectory], List[Tuple[float, int]]]:
-        assert len(positions) == len(orns)
-
-        start_state = None
-        results: List[bool] = []
-        plans: List[RobotTrajectory] = []
-        plan_infos: List[Tuple[float, int]] = []
-        for pos, orn in zip(positions, orns):
-            success, plan, plan_info = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first, start_state=start_state)
-            results.append(success)
-            plans.append(plan)
-            plan_infos.append(plan_info)
-
-            if success:
-                joint_state = JointState()
-                joint_state.header = plan.joint_trajectory.header
-                joint_state.header.stamp = rospy.Time.now()
-                joint_state.name = plan.joint_trajectory.joint_names
-                joint_state.position = plan.joint_trajectory.points[-1].positions
-                joint_state.velocity = plan.joint_trajectory.points[-1].velocities
-                start_state = RobotState(joint_state = joint_state)
-            
-            else:
-                break
-
-        return results, plans, plan_infos
-        
-    def follow_waypoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
-        rospy.loginfo("Begin planning")
-        results, plans, plan_infos = self.plan_pose_waypoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
-        for i, result in enumerate(results):
-            rospy.loginfo(f"   - Pose_{i}: (x,y,z) = ({positions[i][0]:.3f}, {positions[i][1]:.3f}, {positions[i][2]:.3f}), (qx,qy,qz,qw) = ({orns[i][0+versor_comes_first]:.3f}, {orns[i][1+versor_comes_first]:.3f}, {orns[i][2+versor_comes_first]:.3f}, {orns[i][(3+versor_comes_first)%4]:.3f}) || Success: {result}")
-
-        plan_success = results[-1]
-
-        results = []
-        execution_success = True
-        if plan_success is True:
-            for i, plan in enumerate(plans):
-                result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-                self.arm_group.stop()
-                if not result:
-                    execution_success = False
-                    break
+            joint_state = JointState()
+            joint_state.header = plan.joint_trajectory.header
+            joint_state.name = plan.joint_trajectory.joint_names
+            joint_state.position = plan.joint_trajectory.points[-1].positions
+            joint_state.velocity = plan.joint_trajectory.points[-1].velocities
+            final_state: Optional[RobotState] = RobotState(joint_state = joint_state)
         else:
-            execution_success = False
+            final_state: Optional[RobotState] = None
 
-        rospy.loginfo(f"Follow waypoints success: {execution_success}")
-        return execution_success
+        if success:
+            rospy.loginfo(f"EDF Moveit Interface: Found a motion plan with length: {len(plan.joint_trajectory.points)}")
 
-    def plan_cartesian(self, positions: Iterable[np.ndarray], 
-                        orns: Iterable[np.ndarray],
-                        cartesian_step: float,                 # One JointTrajectory point for each cartesian steps (in meters)
-                        cspace_step_thr: float,                    # Allowed jump threshold in C-space
-                        avoid_collision: bool = True,
-                        versor_comes_first: bool = False,
-                        ) -> Tuple[RobotTrajectory, float]:
+        return success, plan, final_state, planning_time, error_code
+
+    def plan_waypoints_cartesian(self, positions: Iterable[np.ndarray], 
+                                 orns: Iterable[np.ndarray],
+                                 cartesian_step: float,                 # One JointTrajectory point for each cartesian steps (in meters)
+                                 cspace_step_thr: float,                    # Allowed jump threshold in C-space
+                                 avoid_collision: bool = False,
+                                 versor_comes_first: bool = False,
+                                 start_state: Optional[RobotState] = None,
+                                 success_fraction: Optional[float] = 0.95,
+                                 ) -> Tuple[RobotTrajectory, float, RobotState]:
         waypoints: List[Pose] = []
-        # if start_from_current_pose:
-        #     waypoints.append(self.get_current_pose(numpy=False))
         
+        self.arm_group.clear_pose_targets()
+        if start_state is not None:
+            self.arm_group.set_start_state(msg=start_state)
+        else:
+            self.arm_group.set_start_state_to_current_state()
+
         for pos, orn in zip(positions, orns):
-            orn = orn / np.linalg.norm(orn, axis=-1, keepdims=True)
+            assert pos.ndim == 1 and pos.shape[-1] == 3 and orn.ndim == 1 and orn.shape[-1] == 4 # Quaternion
+            if pos.dtype != np.float64:
+                pos = pos.astype(np.float64)
+            if orn.dtype != np.float64:
+                orn = orn.astype(np.float64)
+            orn_norm = np.linalg.norm(orn, axis=-1, keepdims=True)
+            if not np.allclose(orn_norm, 1., rtol=0, atol=0.01):
+                rospy.logwarn("EdfMoveitInterface.plan_pose():  Input quaternion is not normalized!")
+            orn = orn / orn_norm
+
             waypoints.append(Pose(position=Point(x=pos[0],y=pos[1],z=pos[2]), orientation=Quaternion(x=orn[0+versor_comes_first], y=orn[1+versor_comes_first], z=orn[2+versor_comes_first], w=orn[(3+versor_comes_first)%4])))
 
-        path, fraction = self.arm_group.compute_cartesian_path(waypoints=waypoints, eef_step=cartesian_step, jump_threshold=cspace_step_thr, avoid_collisions=avoid_collision)
-        return path, fraction
+        plan, fraction = self.arm_group.compute_cartesian_path(waypoints=waypoints, eef_step=cartesian_step, jump_threshold=cspace_step_thr, avoid_collisions=avoid_collision)
 
-    def follow_waypoints_cartesian(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray],
-                                   cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,
-                                   versor_comes_first: bool = False,
-                                   ) -> bool:
+        joint_state = JointState()
+        joint_state.header = plan.joint_trajectory.header
+        joint_state.name = plan.joint_trajectory.joint_names
+        joint_state.position = plan.joint_trajectory.points[-1].positions
+        joint_state.velocity = plan.joint_trajectory.points[-1].velocities
+        final_state: Optional[RobotState] = RobotState(joint_state = joint_state)
 
-        for i, (pos, orn) in enumerate(zip(positions, orns)):
-            rospy.loginfo(f"Following Cartesian Trajectory:")
-            rospy.loginfo(f"  - Pose_{i}: (x,y,z) = ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}), (qx,qy,qz,qw) = ({orn[0+versor_comes_first]:.3f}, {orn[1+versor_comes_first]:.3f}, {orn[2+versor_comes_first]:.3f}, {orn[(3+versor_comes_first)%4]:.3f})")
+        if success_fraction is not None:
+            fraction = fraction >= success_fraction
 
-        plan, fraction = self.plan_cartesian(positions=positions, orns=orns, 
-                                             cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, 
-                                             versor_comes_first=versor_comes_first)
-        if fraction >= min_fraction:
-            rospy.loginfo(f"Cartesian plan success!: Path fraction: {fraction}")
-            plan_success = True
-        else:
-            rospy.logwarn(f"Cartesian plan failed!: Path fraction: {fraction}")
-            plan_success = False
-        plan_infos = ()
+        if fraction:
+            info_str = f"EDF Moveit Interface: Found a Cartesian plan with length: {len(plan.joint_trajectory.points)}"
+            if type(fraction) is not bool:
+                info_str += f" || Path fraction: {fraction}"
+            rospy.loginfo(info_str)
 
-        results = []
-        execution_success = True
-        if plan_success is True:
-            result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-            
-            self.arm_group.stop()
-            if not result:
-                execution_success = False
-        else:
-            execution_success = False
-
-        rospy.loginfo(f"Execution success: {execution_success}")
-        return execution_success
-
-    def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
-                     versor_comes_first: bool = False) -> bool:
-        return self.follow_waypoints(positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
-
+        return fraction, plan, final_state
 
     def control_gripper(self, gripper_val: float) -> bool:
         joint_goal = self.gripper_group.get_current_joint_values()
@@ -319,17 +286,108 @@ class EdfMoveitInterface():
         time.sleep(0.1)
         self.scene_intf.remove_world_object(name=obj_name)
 
-    # def attach_pcd(self, pcd: o3d.cuda.pybind.geometry.PointCloud, 
-    #                obj_name: str, frame: Optional[str] = None,
-    #                pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
-    #                link: Optional[str] = None, touch_links: Optional[List[str]] = None):
-
     def clear(self):
         attached = self.scene_intf.get_attached_objects()
         for obj_name, msg in attached.items(): # msg: AttachedCollisionObject
             self.scene_intf.remove_attached_object(name=obj_name, link=msg.link_name)
         time.sleep(0.1)
         self.scene_intf.remove_world_object()
+
+
+    # def attach_pcd(self, pcd: o3d.cuda.pybind.geometry.PointCloud, 
+    #                obj_name: str, frame: Optional[str] = None,
+    #                pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
+    #                link: Optional[str] = None, touch_links: Optional[List[str]] = None):
+
+
+    # def plan_waypoints(self, positions: Iterable[np.ndarray], 
+    #                    orns: Iterable[np.ndarray],
+    #                    versor_comes_first: bool = False,
+    #                    start_state: Optional[RobotState] = None) -> Tuple[List[bool], List[RobotTrajectory], List[RobotState]]:
+        
+    #     assert len(positions) == len(orns)
+
+    #     successes: List[bool] = []
+    #     plans: List[RobotTrajectory] = []
+    #     final_states: List[RobotState] = []
+    #     for pos, orn in zip(positions, orns):
+    #         success, plan, final_state, _, __ = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first, start_state=start_state)
+    #         successes.append(success)
+    #         plans.append(plan)
+    #         final_states.append(final_state)
+
+    #         if success:
+    #             start_state = final_state
+            
+    #         else:
+    #             break
+
+    #     return successes, plans, final_states
+    
+    # def follow_waypoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
+    #     rospy.loginfo("Begin planning")
+    #     results, plans, plan_infos = self.plan_pose_waypoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
+    #     for i, result in enumerate(results):
+    #         rospy.loginfo(f"   - Pose_{i}: (x,y,z) = ({positions[i][0]:.3f}, {positions[i][1]:.3f}, {positions[i][2]:.3f}), (qx,qy,qz,qw) = ({orns[i][0+versor_comes_first]:.3f}, {orns[i][1+versor_comes_first]:.3f}, {orns[i][2+versor_comes_first]:.3f}, {orns[i][(3+versor_comes_first)%4]:.3f}) || Success: {result}")
+
+    #     plan_success = results[-1]
+
+    #     results = []
+    #     execution_success = True
+    #     if plan_success is True:
+    #         for i, plan in enumerate(plans):
+    #             result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
+    #             self.arm_group.stop()
+    #             if not result:
+    #                 execution_success = False
+    #                 break
+    #     else:
+    #         execution_success = False
+
+    #     rospy.loginfo(f"Follow waypoints success: {execution_success}")
+    #     return execution_success
+
+
+    # def follow_waypoints_cartesian(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray],
+    #                                cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,
+    #                                versor_comes_first: bool = False,
+    #                                ) -> bool:
+
+    #     for i, (pos, orn) in enumerate(zip(positions, orns)):
+    #         rospy.loginfo(f"Following Cartesian Trajectory:")
+    #         rospy.loginfo(f"  - Pose_{i}: (x,y,z) = ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}), (qx,qy,qz,qw) = ({orn[0+versor_comes_first]:.3f}, {orn[1+versor_comes_first]:.3f}, {orn[2+versor_comes_first]:.3f}, {orn[(3+versor_comes_first)%4]:.3f})")
+
+    #     plan, fraction = self.plan_cartesian(positions=positions, orns=orns, 
+    #                                          cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, 
+    #                                          versor_comes_first=versor_comes_first)
+    #     if fraction >= min_fraction:
+    #         rospy.loginfo(f"Cartesian plan success!: Path fraction: {fraction}")
+    #         plan_success = True
+    #     else:
+    #         rospy.logwarn(f"Cartesian plan failed!: Path fraction: {fraction}")
+    #         plan_success = False
+    #     plan_infos = ()
+
+    #     results = []
+    #     execution_success = True
+    #     if plan_success is True:
+    #         result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
+            
+    #         self.arm_group.stop()
+    #         if not result:
+    #             execution_success = False
+    #     else:
+    #         execution_success = False
+
+    #     rospy.loginfo(f"Execution success: {execution_success}")
+    #     return execution_success
+
+    # def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
+    #                  versor_comes_first: bool = False) -> bool:
+    #     return self.follow_waypoints(positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
+
+
+
 
 
 class EdfRosInterface():
@@ -510,32 +568,12 @@ class EdfRosInterface():
             raise NotImplementedError
         else:
             raise ValueError("Wrong observation type is given.")
-
-    def move_to_target_pose(self, poses: SE3) -> Tuple[List[bool], Optional[SE3]]:
-        results = []
-
-        poses = poses.poses
-        for pose in poses:
-            result_ = self.moveit_interface.move_to_pose(pos=pose[4:].detach().cpu().numpy(), orn=pose[:4].detach().cpu().numpy(), versor_comes_first=True)
-            results.append(result_)
-            if result_ is True:
-                result_pose = SE3(poses = pose.clone().unsqueeze(0), device=poses.device)
-                break
-            else:
-                result_pose = None
-        return results, result_pose
     
     def get_current_pose(self):
         pos, orn = self.moveit_interface.get_current_pose(numpy=True, versor_first=True)
         pose = torch.cat([torch.tensor(orn), torch.tensor(pos)], dim=0).type(torch.float32)
         poses = SE3(poses=pose.unsqueeze(-2))
         return poses
-    
-    def move_cartesian(self, poses: SE3, cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,) -> bool:
-        poses = poses.poses
-        result = self.moveit_interface.follow_waypoints_cartesian(positions=poses.detach().cpu().numpy()[...,4:].astype(np.float64), orns=poses.detach().cpu().numpy()[...,:4].astype(np.float64), versor_comes_first=True,
-                                                                  cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, min_fraction=min_fraction)
-        return result
 
     def grasp(self) -> bool:
         grasp_result = self.moveit_interface.control_gripper(gripper_val=self.max_gripper_val)
@@ -558,26 +596,82 @@ class EdfRosInterface():
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
 
-    def pick(self, target_poses: SE3) -> Tuple[List[bool], Optional[SE3], bool, Optional[List[bool]], Optional[SE3]]:
-        release_result: bool = self.release()
-        pre_grasp_results, grasp_pose = self.move_to_target_pose(poses = target_poses)
+    def move_plans(self, targets: Iterable[Tuple[SE3, str, Dict]], start_state: Optional[RobotState] = None):
+
+        plans: List[bool] = []
+        results: List[RobotTrajectory] = []
+        for target in targets:
+            target_pose, planner_name, planner_kwargs = target
+
+            if planner_name == 'default':
+                assert len(target_pose) == 1, f"EDF ROS Interface: Only one pose should be given for each waypoint of a default planner, but {len(target_pose)} poses were given."
+                planner_output = self.moveit_interface.plan_pose(pos=target_pose.points.numpy()[0], orn=target_pose.orns.numpy()[0], versor_comes_first=True, start_state=start_state)
+                success: bool = planner_output[0]
+                plan: RobotTrajectory = planner_output[1]
+                final_state: RobotState = planner_output[2]
+                
+            elif planner_name == 'cartesian':
+                planner_output = self.moveit_interface.plan_waypoints_cartesian(positions=target_pose.points.numpy(), orns=target_pose.orns.numpy(), versor_comes_first=True, start_state=start_state, **planner_kwargs)
+                success: bool = planner_output[0]
+                plan: RobotTrajectory = planner_output[1]
+                final_state: RobotState = planner_output[2]
+
+            else:
+                raise ValueError(f"EDF ROS Interface: Unknown planner name ({planner_name}) is given.")
+
+            results.append(success)
+            if not success:
+                break
+            else:
+                plans.append(plan)
+                start_state = final_state
+
+        return results, plans
+    
+    def execute_plans(self, plans: Iterable[RobotTrajectory]) -> List[bool]:
+        results: List[bool] = self.moveit_interface.execute_plans(plans=plans)
+        return results
+
+    # def move_to_target_pose(self, poses: SE3) -> Tuple[List[bool], Optional[SE3]]:
+    #     results = []
+
+    #     poses = poses.poses
+    #     for pose in poses:
+    #         result_ = self.moveit_interface.move_to_pose(pos=pose[4:].detach().cpu().numpy(), orn=pose[:4].detach().cpu().numpy(), versor_comes_first=True)
+    #         results.append(result_)
+    #         if result_ is True:
+    #             result_pose = SE3(poses = pose.clone().unsqueeze(0), device=poses.device)
+    #             break
+    #         else:
+    #             result_pose = None
+    #     return results, result_pose
+
+    # def move_cartesian(self, poses: SE3, cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,) -> bool:
+    #     poses = poses.poses
+    #     result = self.moveit_interface.follow_waypoints_cartesian(positions=poses.detach().cpu().numpy()[...,4:].astype(np.float64), orns=poses.detach().cpu().numpy()[...,:4].astype(np.float64), versor_comes_first=True,
+    #                                                               cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, min_fraction=min_fraction)
+    #     return result
+
+    # def pick(self, target_poses: SE3) -> Tuple[List[bool], Optional[SE3], bool, Optional[List[bool]], Optional[SE3]]:
+    #     release_result: bool = self.release()
+    #     pre_grasp_results, grasp_pose = self.move_to_target_pose(poses = target_poses)
         
-        if grasp_pose is None:
-            post_grasp_poses = None
-            grasp_result = False
-            post_grasp_results = None
-            final_pose = None
-        else:
-            grasp_result: bool = self.grasp()
-            post_grasp_poses = grasp_pose.poses
+    #     if grasp_pose is None:
+    #         post_grasp_poses = None
+    #         grasp_result = False
+    #         post_grasp_results = None
+    #         final_pose = None
+    #     else:
+    #         grasp_result: bool = self.grasp()
+    #         post_grasp_poses = grasp_pose.poses
 
-            N_candidate_post_grasp = 5
-            post_grasp_poses = post_grasp_poses.repeat(N_candidate_post_grasp,1)
-            post_grasp_poses[:,-1] += torch.linspace(0.3, 0.1, N_candidate_post_grasp, device=post_grasp_poses.device)
-            post_grasp_results, final_pose = self.move_to_target_pose(poses = SE3(post_grasp_poses))
+    #         N_candidate_post_grasp = 5
+    #         post_grasp_poses = post_grasp_poses.repeat(N_candidate_post_grasp,1)
+    #         post_grasp_poses[:,-1] += torch.linspace(0.3, 0.1, N_candidate_post_grasp, device=post_grasp_poses.device)
+    #         post_grasp_results, final_pose = self.move_to_target_pose(poses = SE3(post_grasp_poses))
 
-        return pre_grasp_results, grasp_pose, grasp_result, post_grasp_results, final_pose
+    #     return pre_grasp_results, grasp_pose, grasp_result, post_grasp_results, final_pose
 
 
-    def place(self, poses):
-        raise NotImplementedError
+    # def place(self, poses):
+    #     raise NotImplementedError
