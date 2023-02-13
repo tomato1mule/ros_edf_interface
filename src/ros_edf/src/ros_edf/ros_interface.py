@@ -394,7 +394,8 @@ class EdfRosInterface():
     def __init__(self, reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
-                 planner_id: str = "BiTRRT"):
+                 planner_id: str = "BiTRRT",
+                 ):
 
         self.update_scene_pc_flag = False
         self.scene_pc_raw = None
@@ -592,6 +593,13 @@ class EdfRosInterface():
         pcd: o3d.geometry.PointCloud = pcd.to_pcd()
         mesh: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
         self.moveit_interface.attach_mesh(mesh = mesh, obj_name="eef")
+
+    def attach_sphere(self, radius = 0.1, pos: Iterable = [0, 0, 0.1], color: Iterable = [0.7, 0.1, 0.1]):
+        pos, color = torch.tensor(pos, dtype=torch.float64, device='cpu'), torch.tensor(color, dtype=torch.float64, device='cpu')
+        mesh_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
+        mesh_sphere.paint_uniform_color(color.detach().cpu().numpy())
+        mesh_sphere.translate(pos.detach().cpu().numpy())
+        self.moveit_interface.attach_mesh(mesh=mesh_sphere, obj_name="eef")
 
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
