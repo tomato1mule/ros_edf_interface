@@ -29,6 +29,7 @@ from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObj
 import torch
 
 from edf.data import SE3, PointCloud
+from edf.env_interface import EdfInterfaceBase
 from ros_edf.pc_utils import reconstruct_surface, mesh_o3d_to_ros, decode_pc
 
 
@@ -294,103 +295,7 @@ class EdfMoveitInterface():
         self.scene_intf.remove_world_object()
 
 
-    # def attach_pcd(self, pcd: o3d.geometry.PointCloud, 
-    #                obj_name: str, frame: Optional[str] = None,
-    #                pos: np.ndarray = np.array([0.,0.,0.]), orn: np.ndarray = np.array([0., 0., 0., 1.]), versor_comes_first = False,
-    #                link: Optional[str] = None, touch_links: Optional[List[str]] = None):
-
-
-    # def plan_waypoints(self, positions: Iterable[np.ndarray], 
-    #                    orns: Iterable[np.ndarray],
-    #                    versor_comes_first: bool = False,
-    #                    start_state: Optional[RobotState] = None) -> Tuple[List[bool], List[RobotTrajectory], List[RobotState]]:
-        
-    #     assert len(positions) == len(orns)
-
-    #     successes: List[bool] = []
-    #     plans: List[RobotTrajectory] = []
-    #     final_states: List[RobotState] = []
-    #     for pos, orn in zip(positions, orns):
-    #         success, plan, final_state, _, __ = self.plan_pose(pos=pos, orn=orn, versor_comes_first=versor_comes_first, start_state=start_state)
-    #         successes.append(success)
-    #         plans.append(plan)
-    #         final_states.append(final_state)
-
-    #         if success:
-    #             start_state = final_state
-            
-    #         else:
-    #             break
-
-    #     return successes, plans, final_states
-    
-    # def follow_waypoints(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray], versor_comes_first: bool = False) -> bool:
-    #     rospy.loginfo("Begin planning")
-    #     results, plans, plan_infos = self.plan_pose_waypoints(positions=positions, orns=orns, versor_comes_first=versor_comes_first)
-    #     for i, result in enumerate(results):
-    #         rospy.loginfo(f"   - Pose_{i}: (x,y,z) = ({positions[i][0]:.3f}, {positions[i][1]:.3f}, {positions[i][2]:.3f}), (qx,qy,qz,qw) = ({orns[i][0+versor_comes_first]:.3f}, {orns[i][1+versor_comes_first]:.3f}, {orns[i][2+versor_comes_first]:.3f}, {orns[i][(3+versor_comes_first)%4]:.3f}) || Success: {result}")
-
-    #     plan_success = results[-1]
-
-    #     results = []
-    #     execution_success = True
-    #     if plan_success is True:
-    #         for i, plan in enumerate(plans):
-    #             result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-    #             self.arm_group.stop()
-    #             if not result:
-    #                 execution_success = False
-    #                 break
-    #     else:
-    #         execution_success = False
-
-    #     rospy.loginfo(f"Follow waypoints success: {execution_success}")
-    #     return execution_success
-
-
-    # def follow_waypoints_cartesian(self, positions: Iterable[np.ndarray], orns: Iterable[np.ndarray],
-    #                                cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,
-    #                                versor_comes_first: bool = False,
-    #                                ) -> bool:
-
-    #     for i, (pos, orn) in enumerate(zip(positions, orns)):
-    #         rospy.loginfo(f"Following Cartesian Trajectory:")
-    #         rospy.loginfo(f"  - Pose_{i}: (x,y,z) = ({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}), (qx,qy,qz,qw) = ({orn[0+versor_comes_first]:.3f}, {orn[1+versor_comes_first]:.3f}, {orn[2+versor_comes_first]:.3f}, {orn[(3+versor_comes_first)%4]:.3f})")
-
-    #     plan, fraction = self.plan_cartesian(positions=positions, orns=orns, 
-    #                                          cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, 
-    #                                          versor_comes_first=versor_comes_first)
-    #     if fraction >= min_fraction:
-    #         rospy.loginfo(f"Cartesian plan success!: Path fraction: {fraction}")
-    #         plan_success = True
-    #     else:
-    #         rospy.logwarn(f"Cartesian plan failed!: Path fraction: {fraction}")
-    #         plan_success = False
-    #     plan_infos = ()
-
-    #     results = []
-    #     execution_success = True
-    #     if plan_success is True:
-    #         result: bool = self.arm_group.execute(plan_msg=plan, wait=True)
-            
-    #         self.arm_group.stop()
-    #         if not result:
-    #             execution_success = False
-    #     else:
-    #         execution_success = False
-
-    #     rospy.loginfo(f"Execution success: {execution_success}")
-    #     return execution_success
-
-    # def move_to_pose(self, pos: np.ndarray, orn: np.ndarray,
-    #                  versor_comes_first: bool = False) -> bool:
-    #     return self.follow_waypoints(positions=[pos], orns=[orn], versor_comes_first=versor_comes_first)
-
-
-
-
-
-class EdfRosInterface():
+class EdfRosInterface(EdfInterfaceBase):
     def __init__(self, reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
@@ -589,25 +494,27 @@ class EdfRosInterface():
         mesh: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
         self.moveit_interface.add_mesh(mesh = mesh, obj_name=obj_name)
 
-    def attach(self, pcd: PointCloud):
-        pcd: o3d.geometry.PointCloud = pcd.to_pcd()
-        mesh: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
-        self.moveit_interface.attach_mesh(mesh = mesh, obj_name="eef")
+    def attach(self, obj: PointCloud):
+        obj: o3d.geometry.PointCloud = obj.to_pcd()
+        obj: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=obj)
+        self.moveit_interface.attach_mesh(mesh = obj, obj_name="eef")
 
-    def attach_sphere(self, radius = 0.1, pos: Iterable = [0, 0, 0.1], color: Iterable = [0.7, 0.1, 0.1]):
+    def _attach_sphere(self, radius: float, pos: Iterable, color: Iterable, obj_name: str = "eef"):
         pos, color = torch.tensor(pos, dtype=torch.float64, device='cpu'), torch.tensor(color, dtype=torch.float64, device='cpu')
         mesh_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
         mesh_sphere.paint_uniform_color(color.detach().cpu().numpy())
         mesh_sphere.translate(pos.detach().cpu().numpy())
-        self.moveit_interface.attach_mesh(mesh=mesh_sphere, obj_name="eef")
+        self.moveit_interface.attach_mesh(mesh=mesh_sphere, obj_name=obj_name)
+
+    def attach_placeholder(self):
+        self._attach_sphere(radius=0.1, pos=[0,0,0.22], color=[0.7, 0.1, 0.1])
 
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
 
-    def move_plans(self, targets: Iterable[Tuple[SE3, str, Dict]], start_state: Optional[RobotState] = None):
-
-        plans: List[bool] = []
-        results: List[RobotTrajectory] = []
+    def move_plans(self, targets: Iterable[Tuple[SE3, str, Dict]], start_state: Optional[RobotState] = None) -> Tuple[List[bool], List[RobotTrajectory]]:
+        plans: List[RobotTrajectory] = []
+        results: List[bool] = []
         for target in targets:
             target_pose, planner_name, planner_kwargs = target
 
