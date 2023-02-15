@@ -341,6 +341,9 @@ class EdfRosInterface(EdfInterfaceBase):
         self.reset_env()
         self.moveit_interface.clear()
 
+    def set_planning_time(self, seconds: float = 5.):
+        self.moveit_interface.arm_group.set_planning_time(seconds=seconds)
+
     def get_frame(self, target_frame: str, source_frame: str):
         trans = self.tf_Buffer.lookup_transform(target_frame=source_frame, source_frame=target_frame, time = rospy.Time()) # transform is inverse of the frame
         pos = np.array([trans.transform.translation.x, trans.transform.translation.y, trans.transform.translation.z])
