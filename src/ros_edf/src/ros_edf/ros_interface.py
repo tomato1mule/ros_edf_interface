@@ -294,6 +294,14 @@ class EdfMoveitInterface():
         time.sleep(0.1)
         self.scene_intf.remove_world_object()
 
+    def move_to_named_target(self, name: str) -> bool:
+        js = JointState()
+        for k,v in self.arm_group.get_named_target_values(name).items():
+            js.name.append(k)
+            js.position.append(v)
+        return self.arm_group.go(joints=js, wait=True)
+        
+
 
 class EdfRosInterface(EdfInterfaceBase):
     def __init__(self, reference_frame: str, 
@@ -326,8 +334,8 @@ class EdfRosInterface(EdfInterfaceBase):
         self.tf_listener = tf2_ros.TransformListener(self.tf_Buffer)
         self.clear_octomap = rospy.ServiceProxy('clear_octomap', Empty)
 
-        self.min_gripper_val = 0.0
-        self.max_gripper_val = 0.725
+        self.min_gripper_val = 0.0 # release
+        self.max_gripper_val = 0.725 # grasp (0.725 max)
 
         self.eef_link_name = self.moveit_interface.get_eef_link_name()
         if not self.eef_link_name:
@@ -549,47 +557,9 @@ class EdfRosInterface(EdfInterfaceBase):
     def execute_plans(self, plans: Iterable[RobotTrajectory]) -> List[bool]:
         results: List[bool] = self.moveit_interface.execute_plans(plans=plans)
         return results
-
-    # def move_to_target_pose(self, poses: SE3) -> Tuple[List[bool], Optional[SE3]]:
-    #     results = []
-
-    #     poses = poses.poses
-    #     for pose in poses:
-    #         result_ = self.moveit_interface.move_to_pose(pos=pose[4:].detach().cpu().numpy(), orn=pose[:4].detach().cpu().numpy(), versor_comes_first=True)
-    #         results.append(result_)
-    #         if result_ is True:
-    #             result_pose = SE3(poses = pose.clone().unsqueeze(0), device=poses.device)
-    #             break
-    #         else:
-    #             result_pose = None
-    #     return results, result_pose
-
-    # def move_cartesian(self, poses: SE3, cartesian_step: float, cspace_step_thr: float, avoid_collision: bool = True, min_fraction: float = 0.95,) -> bool:
-    #     poses = poses.poses
-    #     result = self.moveit_interface.follow_waypoints_cartesian(positions=poses.detach().cpu().numpy()[...,4:].astype(np.float64), orns=poses.detach().cpu().numpy()[...,:4].astype(np.float64), versor_comes_first=True,
-    #                                                               cartesian_step=cartesian_step, cspace_step_thr=cspace_step_thr, avoid_collision=avoid_collision, min_fraction=min_fraction)
-    #     return result
-
-    # def pick(self, target_poses: SE3) -> Tuple[List[bool], Optional[SE3], bool, Optional[List[bool]], Optional[SE3]]:
-    #     release_result: bool = self.release()
-    #     pre_grasp_results, grasp_pose = self.move_to_target_pose(poses = target_poses)
-        
-    #     if grasp_pose is None:
-    #         post_grasp_poses = None
-    #         grasp_result = False
-    #         post_grasp_results = None
-    #         final_pose = None
-    #     else:
-    #         grasp_result: bool = self.grasp()
-    #         post_grasp_poses = grasp_pose.poses
-
-    #         N_candidate_post_grasp = 5
-    #         post_grasp_poses = post_grasp_poses.repeat(N_candidate_post_grasp,1)
-    #         post_grasp_poses[:,-1] += torch.linspace(0.3, 0.1, N_candidate_post_grasp, device=post_grasp_poses.device)
-    #         post_grasp_results, final_pose = self.move_to_target_pose(poses = SE3(post_grasp_poses))
-
-    #     return pre_grasp_results, grasp_pose, grasp_result, post_grasp_results, final_pose
-
-
-    # def place(self, poses):
-    #     raise NotImplementedError
+    
+    def move_to_named_target(self, name: str) -> str:
+        if self.moveit_interface.move_to_named_target(name=name):
+            return 'SUCCESS'
+        else:
+            return f"MOVE_TO_{name}_FAIL"
