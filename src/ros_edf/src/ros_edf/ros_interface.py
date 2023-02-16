@@ -21,7 +21,7 @@ from std_msgs.msg import Header, Duration
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryFeedback, FollowJointTrajectoryResult, JointTolerance
 from trajectory_msgs.msg import JointTrajectory
 from geometry_msgs.msg import TransformStamped, Pose, Point, Quaternion
-from std_srvs.srv import Empty, EmptyRequest, EmptyResponse
+from std_srvs.srv import Empty, EmptyRequest, EmptyResponse, Trigger, TriggerRequest, TriggerResponse
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, RobotState, RobotTrajectory
 # from ros_edf.srv import UpdatePointCloud, UpdatePointCloudRequest, UpdatePointCloudResponse
 
@@ -308,6 +308,7 @@ class EdfRosInterface(EdfInterfaceBase):
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
                  planner_id: str = "BiTRRT",
+                 env_attach_srv: bool = False
                  ):
 
         self.update_scene_pc_flag = False
@@ -341,6 +342,13 @@ class EdfRosInterface(EdfInterfaceBase):
         if not self.eef_link_name:
             rospy.logerr("There is no end-effector!")
             raise RuntimeError("There is no end-effector!")
+        
+        if env_attach_srv is True:
+            self.request_env_attach = rospy.ServiceProxy('env_attach_srv', Trigger)
+            self.request_env_detach = rospy.ServiceProxy('env_detach_srv', Trigger)
+        else:
+            self.request_env_attach = None
+            self.request_env_detach = None
 
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
         self.update_eef_pc(request_update=False, timeout_sec=10.0)
@@ -509,6 +517,8 @@ class EdfRosInterface(EdfInterfaceBase):
         obj: o3d.geometry.PointCloud = obj.to_pcd()
         obj: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=obj)
         self.moveit_interface.attach_mesh(mesh = obj, obj_name="eef")
+        if self.request_env_attach is not None:
+            self.request_env_attach()
 
     def _attach_sphere(self, radius: float, pos: Iterable, color: Iterable, obj_name: str = "eef"):
         pos, color = torch.tensor(pos, dtype=torch.float64, device='cpu'), torch.tensor(color, dtype=torch.float64, device='cpu')
@@ -522,6 +532,8 @@ class EdfRosInterface(EdfInterfaceBase):
 
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
+        if self.request_env_detach is not None:
+            self.request_env_detach()
 
     def move_plans(self, targets: Iterable[Tuple[SE3, str, Dict]], start_state: Optional[RobotState] = None) -> Tuple[List[bool], List[RobotTrajectory]]:
         plans: List[RobotTrajectory] = []
