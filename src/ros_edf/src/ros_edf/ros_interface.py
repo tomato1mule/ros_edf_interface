@@ -308,7 +308,8 @@ class EdfRosInterface(EdfInterfaceBase):
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
                  planner_id: str = "BiTRRT",
-                 env_attach_srv: bool = False
+                 use_env_grasp_srv: bool = False,
+                 use_env_attach_srv: bool = False,
                  ):
 
         self.update_scene_pc_flag = False
@@ -343,12 +344,20 @@ class EdfRosInterface(EdfInterfaceBase):
             rospy.logerr("There is no end-effector!")
             raise RuntimeError("There is no end-effector!")
         
-        if env_attach_srv is True:
+        if use_env_attach_srv is True:
             self.request_env_attach = rospy.ServiceProxy('env_attach_srv', Trigger)
             self.request_env_detach = rospy.ServiceProxy('env_detach_srv', Trigger)
         else:
             self.request_env_attach = None
             self.request_env_detach = None
+
+        if use_env_grasp_srv is True:
+            self.request_env_grasp = rospy.ServiceProxy('env_grasp_srv', Trigger)
+            self.request_env_release = rospy.ServiceProxy('env_release_srv', Trigger)
+        else:
+            self.request_env_grasp = None
+            self.request_env_release = None
+
 
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
         self.update_eef_pc(request_update=False, timeout_sec=10.0)
@@ -501,12 +510,20 @@ class EdfRosInterface(EdfInterfaceBase):
         return poses
 
     def grasp(self) -> bool:
-        grasp_result = self.moveit_interface.control_gripper(gripper_val=self.max_gripper_val)
-        return grasp_result
+        if self.request_env_grasp is not None:
+            result: TriggerResponse = self.request_env_grasp()
+            result = result.success
+        else:
+            result = self.moveit_interface.control_gripper(gripper_val=self.max_gripper_val)
+        return result
     
     def release(self) -> bool:
-        grasp_result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
-        return grasp_result
+        if self.request_env_release is not None:
+            result: TriggerResponse = self.request_env_release()
+            result = result.success
+        else:
+            result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
+        return result
     
     def add_obj(self, pcd: PointCloud, obj_name: str):
         pcd: o3d.geometry.PointCloud = pcd.to_pcd()
