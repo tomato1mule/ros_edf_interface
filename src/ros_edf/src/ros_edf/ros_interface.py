@@ -303,13 +303,22 @@ class EdfMoveitInterface():
         
 
 
+
+
+
+
+
+
+
+
+
 class EdfRosInterface(EdfInterfaceBase):
     def __init__(self, reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
                  planner_id: str = "BiTRRT",
-                 use_env_grasp_srv: bool = False,
-                 use_env_attach_srv: bool = False,
+                 use_moveit_gripper_planner: bool = False,
+                 gripper_range: List[float] = [0., 0.725]
                  ):
 
         self.update_scene_pc_flag = False
@@ -322,7 +331,7 @@ class EdfRosInterface(EdfInterfaceBase):
         self.reference_frame = reference_frame
         self.arm_group_name = arm_group_name
         self.gripper_group_name = gripper_group_name
-        self.planner_id = planner_id    
+        self.planner_id = planner_id
     
         rospy.init_node('edf_env_ros_interface', anonymous=True)
         self.moveit_interface = EdfMoveitInterface(pose_reference_frame=self.reference_frame, arm_group_name=self.arm_group_name, gripper_group_name=self.gripper_group_name, planner_id=planner_id, init_node=False, moveit_commander_argv=sys.argv)
@@ -336,27 +345,29 @@ class EdfRosInterface(EdfInterfaceBase):
         self.tf_listener = tf2_ros.TransformListener(self.tf_Buffer)
         self.clear_octomap = rospy.ServiceProxy('clear_octomap', Empty)
 
-        self.min_gripper_val = 0.0 # release
-        self.max_gripper_val = 0.725 # grasp (0.725 max)
+        self.min_gripper_val = gripper_range[0] # release
+        self.max_gripper_val = gripper_range[1] # grasp (0.725 max)
 
         self.eef_link_name = self.moveit_interface.get_eef_link_name()
         if not self.eef_link_name:
             rospy.logerr("There is no end-effector!")
             raise RuntimeError("There is no end-effector!")
         
-        if use_env_attach_srv is True:
-            self.request_env_attach = rospy.ServiceProxy('env_attach_srv', Trigger)
-            self.request_env_detach = rospy.ServiceProxy('env_detach_srv', Trigger)
-        else:
-            self.request_env_attach = None
-            self.request_env_detach = None
+        # if use_env_attach_srv is True:
+        #     self.request_env_attach = rospy.ServiceProxy('env_attach_srv', Trigger)
+        #     self.request_env_detach = rospy.ServiceProxy('env_detach_srv', Trigger)
+        # else:
+        #     self.request_env_attach = None
+        #     self.request_env_detach = None
 
-        if use_env_grasp_srv is True:
-            self.request_env_grasp = rospy.ServiceProxy('env_grasp_srv', Trigger)
-            self.request_env_release = rospy.ServiceProxy('env_release_srv', Trigger)
+        if use_moveit_gripper_planner is True:
+            self.request_grasp = lambda :self.moveit_interface.control_gripper(gripper_val=self.max_gripper_val)
+            self.request_release = lambda :self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
         else:
-            self.request_env_grasp = None
-            self.request_env_release = None
+            self.request_grasp_srv = rospy.ServiceProxy('grasp_srv', Trigger)
+            self.request_release_srv = rospy.ServiceProxy('release_srv', Trigger)
+            self.request_grasp = lambda :self.request_grasp_srv().success
+            self.request_release = lambda :self.request_release_srv().success
 
 
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
@@ -510,19 +521,11 @@ class EdfRosInterface(EdfInterfaceBase):
         return poses
 
     def grasp(self) -> bool:
-        if self.request_env_grasp is not None:
-            result: TriggerResponse = self.request_env_grasp()
-            result = result.success
-        else:
-            result = self.moveit_interface.control_gripper(gripper_val=self.max_gripper_val)
+        result = self.request_grasp()
         return result
     
     def release(self) -> bool:
-        if self.request_env_release is not None:
-            result: TriggerResponse = self.request_env_release()
-            result = result.success
-        else:
-            result = self.moveit_interface.control_gripper(gripper_val=self.min_gripper_val)
+        result = self.request_release()
         return result
     
     def add_obj(self, pcd: PointCloud, obj_name: str):
@@ -534,8 +537,6 @@ class EdfRosInterface(EdfInterfaceBase):
         obj: o3d.geometry.PointCloud = obj.to_pcd()
         obj: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=obj)
         self.moveit_interface.attach_mesh(mesh = obj, obj_name="eef")
-        if self.request_env_attach is not None:
-            self.request_env_attach()
 
     def _attach_sphere(self, radius: float, pos: Iterable, color: Iterable, obj_name: str = "eef"):
         pos, color = torch.tensor(pos, dtype=torch.float64, device='cpu'), torch.tensor(color, dtype=torch.float64, device='cpu')
@@ -549,8 +550,6 @@ class EdfRosInterface(EdfInterfaceBase):
 
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
-        if self.request_env_detach is not None:
-            self.request_env_detach()
 
     def move_plans(self, targets: Iterable[Tuple[SE3, str, Dict]], start_state: Optional[RobotState] = None) -> Tuple[List[bool], List[RobotTrajectory]]:
         plans: List[RobotTrajectory] = []
