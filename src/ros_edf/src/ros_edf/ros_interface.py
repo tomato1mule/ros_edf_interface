@@ -29,7 +29,7 @@ from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObj
 import torch
 
 from edf.data import SE3, PointCloud
-from edf.env_interface import EdfInterfaceBase
+from edf.env_interface import EdfInterfaceBase, SUCCESS, PLAN_FAIL, EXECUTION_FAIL
 from ros_edf.pc_utils import reconstruct_surface, mesh_o3d_to_ros, decode_pc
 
 
@@ -320,7 +320,7 @@ class EdfRosInterface(EdfInterfaceBase):
                  use_moveit_gripper_planner: bool = False,
                  gripper_range: List[float] = [0., 0.725]
                  ):
-
+        self.in_grasp: bool = False
         self.update_scene_pc_flag = False
         self.scene_pc_raw = None
         self.scene_pc = None
@@ -522,10 +522,14 @@ class EdfRosInterface(EdfInterfaceBase):
 
     def grasp(self) -> bool:
         result = self.request_grasp()
+        if result:
+            self.in_grasp = True
         return result
     
     def release(self) -> bool:
         result = self.request_release()
+        if result:
+            self.in_grasp = False
         return result
     
     def add_obj(self, pcd: PointCloud, obj_name: str):
@@ -551,11 +555,14 @@ class EdfRosInterface(EdfInterfaceBase):
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
 
-    def move_plans(self, targets: Iterable[Tuple[SE3, str, Dict]], start_state: Optional[RobotState] = None) -> Tuple[List[bool], List[RobotTrajectory]]:
+    def move_plans(self, targets: Iterable[Tuple[SE3, Dict]], start_state: Optional[RobotState] = None) -> Tuple[List[bool], List[RobotTrajectory]]:
         plans: List[RobotTrajectory] = []
         results: List[bool] = []
         for target in targets:
-            target_pose, planner_name, planner_kwargs = target
+            target_pose, planner_kwargs = target
+            planner_kwargs = planner_kwargs.copy()
+            planner_name = planner_kwargs['planner_name']
+            del planner_kwargs['planner_name']
 
             if planner_name == 'default':
                 assert len(target_pose) == 1, f"EDF ROS Interface: Only one pose should be given for each waypoint of a default planner, but {len(target_pose)} poses were given."
@@ -586,8 +593,8 @@ class EdfRosInterface(EdfInterfaceBase):
         results: List[bool] = self.moveit_interface.execute_plans(plans=plans)
         return results
     
-    def move_to_named_target(self, name: str) -> str:
+    def move_to_named_target(self, name: str) -> Tuple[str, str]:
         if self.moveit_interface.move_to_named_target(name=name):
-            return 'SUCCESS'
+            return SUCCESS, f"MOVE_TO_{name}_SUCCESS"
         else:
-            return f"MOVE_TO_{name}_FAIL"
+            return EXECUTION_FAIL, f"MOVE_TO_{name}_FAIL"
