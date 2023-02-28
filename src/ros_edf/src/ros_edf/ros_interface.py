@@ -23,6 +23,7 @@ from trajectory_msgs.msg import JointTrajectory
 from geometry_msgs.msg import TransformStamped, Pose, Point, Quaternion
 from std_srvs.srv import Empty, EmptyRequest, EmptyResponse, Trigger, TriggerRequest, TriggerResponse
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, RobotState, RobotTrajectory
+from nav_msgs.srv import GetPlan, GetPlanRequest, GetPlanResponse
 # from ros_edf.srv import UpdatePointCloud, UpdatePointCloudRequest, UpdatePointCloudResponse
 
 
@@ -369,6 +370,8 @@ class EdfRosInterface(EdfInterfaceBase):
             self.request_grasp = lambda :self.request_grasp_srv().success
             self.request_release = lambda :self.request_release_srv().success
 
+        self._move_robot_base = rospy.ServiceProxy('mobile_base_srv', GetPlan)
+
 
         self.update_scene_pc(request_update=False, timeout_sec=10.0)
         self.update_eef_pc(request_update=False, timeout_sec=10.0)
@@ -598,3 +601,21 @@ class EdfRosInterface(EdfInterfaceBase):
             return SUCCESS, f"MOVE_TO_{name}_SUCCESS"
         else:
             return EXECUTION_FAIL, f"MOVE_TO_{name}_FAIL"
+        
+    def move_robot_base(self, pos: Union[torch.Tensor, np.ndarray], clear_octomap: bool = True) -> bool:
+        if isinstance(pos, torch.Tensor):
+            pos = pos.detach().cpu().numpy().astype(np.double)
+        assert len(pos) == 2 and pos.ndim == 1
+        orn = np.array([0., 0., 0., 1.])
+        request = GetPlanRequest()
+        request.goal.pose.position.x = pos[0]
+        request.goal.pose.position.y = pos[1]
+        request.goal.pose.orientation.w, request.goal.pose.orientation.x, request.goal.pose.orientation.y, request.goal.pose.orientation.z = orn[0], orn[1], orn[2], orn[3]
+
+        response: GetPlanResponse = self._move_robot_base(request)
+
+        if clear_octomap:
+            time.sleep(2.1)
+            self.clear_octomap()
+            time.sleep(2.1)
+        return True
