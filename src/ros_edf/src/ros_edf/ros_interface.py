@@ -39,7 +39,7 @@ class EdfMoveitInterface():
     def __init__(self, pose_reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
-                 planner_id: str = "BiTRRT",
+                 planner_id: str = "AnytimePathShortening",
                  init_node: bool = False, 
                  moveit_commander_argv = sys.argv):
         moveit_commander.roscpp_initialize(moveit_commander_argv)
@@ -317,7 +317,7 @@ class EdfRosInterface(EdfInterfaceBase):
     def __init__(self, reference_frame: str, 
                  arm_group_name: str = "arm",
                  gripper_group_name: str = "gripper",
-                 planner_id: str = "BiTRRT",
+                 planner_id: str = "AnytimePathShortening",
                  use_moveit_gripper_planner: bool = False,
                  gripper_range: List[float] = [0., 0.725]
                  ):
@@ -614,8 +614,7 @@ class EdfRosInterface(EdfInterfaceBase):
 
         response: GetPlanResponse = self._move_robot_base(request)
 
-        if clear_octomap:
-            time.sleep(2.1)
-            self.clear_octomap()
-            time.sleep(2.1)
+        # if clear_octomap:
+        #     self.clear_octomap()
+        #     time.sleep(2.5)
         return True

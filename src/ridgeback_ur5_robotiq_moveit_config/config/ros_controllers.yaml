@@ -9,6 +9,7 @@ generic_hw_control_loop:
 # Settings for ros_control hardware interface
 hardware_interface:
   joints:
+    - mobile_base_joint
     - ur_arm_shoulder_pan_joint
     - ur_arm_shoulder_lift_joint
     - ur_arm_elbow_joint
