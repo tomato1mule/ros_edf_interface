@@ -552,8 +552,8 @@ class EdfRosInterface(EdfInterfaceBase):
         mesh_sphere.translate(pos.detach().cpu().numpy())
         self.moveit_interface.attach_mesh(mesh=mesh_sphere, obj_name=obj_name)
 
-    def attach_placeholder(self):
-        self._attach_sphere(radius=0.1, pos=[0,0,0.22], color=[0.7, 0.1, 0.1])
+    def attach_placeholder(self, size: float):
+        self._attach_sphere(radius=size, pos=[0,0,0.22], color=[0.7, 0.1, 0.1])
 
     def detach(self):
         self.moveit_interface.remove_attached_object(obj_name="eef")
