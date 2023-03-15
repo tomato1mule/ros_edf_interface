@@ -41,5 +41,5 @@
 #     echo "PASS ${CONDA_PREFIX}/etc/conda/deactivate.d/env_vars.sh"
 # fi
 
-BASEDIR=$(dirname "$0")
-ln -s ${BASEDIR}/devel/setup.sh ${CONDA_PREFIX}/etc/conda/activate.d/ros_edf_interface_setup.sh
+echo "Setting symbolic link from '${PWD}/devel/setup.sh' to '${PWD}/etc/conda/activate.d/ros_edf_interface_setup.sh'"
+ln -sf ${PWD}/devel/setup.sh ${CONDA_PREFIX}/etc/conda/activate.d/ros_edf_interface_setup.sh
