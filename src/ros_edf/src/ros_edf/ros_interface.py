@@ -536,12 +536,12 @@ class EdfRosInterface(EdfInterfaceBase):
         return result
     
     def add_obj(self, pcd: PointCloud, obj_name: str):
-        pcd: o3d.geometry.PointCloud = pcd.to_pcd()
+        pcd: o3d.geometry.PointCloud = pcd.to_o3d()
         mesh: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=pcd)
         self.moveit_interface.add_mesh(mesh = mesh, obj_name=obj_name)
 
     def attach(self, obj: PointCloud):
-        obj: o3d.geometry.PointCloud = obj.to_pcd()
+        obj: o3d.geometry.PointCloud = obj.to_o3d()
         obj: o3d.geometry.TriangleMesh = reconstruct_surface(pcd=obj)
         self.moveit_interface.attach_mesh(mesh = obj, obj_name="eef")
 
