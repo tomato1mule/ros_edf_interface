@@ -4,7 +4,17 @@
   <param name="ur5_description" textfile="$(find ocs2_robotic_assets)/resources/mobile_manipulator/ridgeback_ur5/urdf/ridgeback_ur5_robotiq.urdf"/>
   <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="ridgeback_base_to_ur5_base_static_tf_pub" args="0 0 0.28 3.141592653589793 0 0 base_link ur_arm_base_link_inertia" /> -->
 
-  <node name="ur5_pybullet" pkg="ros_edf" type="ros_edf_env.py" />
+
+
+  <arg name="target_obj_pose" default="upright"/>
+  <arg name="target_obj_name" default="train/mug0"/>
+  <arg name="n_distractors" default="0"/>
+  <arg name="use_support" default="false"/>
+  <node name="ur5_pybullet" pkg="ros_edf" type="ros_edf_env.py" args="--target-obj-pose=$(arg target_obj_pose) --target-obj-name=$(arg target_obj_name) --n-distractors=$(arg n_distractors) --use-support=$(arg use_support)" />
+
+
+
+
   <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher">
     <remap from="robot_description" to="ur5_description" />
     <!-- <remap from="joint_states" to="CUSTOM_TOPIC_NAME" /> -->
